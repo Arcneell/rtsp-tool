@@ -1,0 +1,37 @@
+# Configuration locale (IP, identifiants) — jamais publiée
+config.yaml
+*.env
+.env
+
+# Secrets / certificats
+*.cer
+*.pfx
+*.p12
+*.key
+
+# Référence externe (autres projets) et archives / imports
+_ref/
+_import/
+*.zip
+
+# Captures QR / images d'import (identifiants DVR)
+new_qr_*.png
+new_qr_*.jpg
+
+# libmpv locale (dev Windows)
+lib/
+
+# Builds et livrables
+build/
+dist/
+livraison/
+*.spec
+
+# Doc interne (non publiée)
+CADRAGE.md
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

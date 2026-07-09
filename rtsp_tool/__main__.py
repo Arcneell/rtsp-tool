@@ -1,0 +1,56 @@
+"""Point d'entrée : python -m rtsp_tool [--config chemin/config.yaml]
+
+Sans argument, la configuration vit dans le profil utilisateur
+(%APPDATA%\\RTSP-TOOL\\config.yaml) et se gère entièrement dans l'interface.
+Usage portable : --config .\\config.yaml à côté de l'exe.
+"""
+
+import argparse
+import logging
+import os
+import sys
+
+from .config import default_config_path
+
+
+def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    parser = argparse.ArgumentParser(prog="rtsp-tool",
+                                     description="Visionneuse RTSP multi-sites")
+    parser.add_argument("--config", "-c", default="",
+                        help="chemin du fichier de configuration (défaut : profil utilisateur)")
+    args = parser.parse_args()
+
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication(sys.argv)
+    app.setApplicationName("RTSP-TOOL")
+
+    from .ui.theme import apply_dark_theme
+    apply_dark_theme(app)
+    from .ui.icons import app_icon
+    app.setWindowIcon(app_icon())
+
+    config_path = args.config
+    if not config_path:
+        # portable : un config.yaml posé à côté de l'exe a priorité
+        if getattr(sys, "frozen", False):
+            portable = os.path.join(os.path.dirname(sys.executable), "config.yaml")
+            if os.path.exists(portable):
+                config_path = portable
+        config_path = config_path or default_config_path()
+
+    from .ui.main_window import MainWindow
+
+    win = MainWindow(config_path)
+    win.show()
+    return app.exec()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,600 @@
+"""Configuration 100 % par l'interface : sites, caméras, DVR entiers.
+
+- ConfigDialog : le gestionnaire ⚙ (arbre sites/caméras + boutons)
+- DvrDialog    : ajoute toutes les caméras d'un DVR d'un coup — interroge
+                 l'ISAPI Hikvision pour découvrir canaux et noms, ou génère
+                 la liste manuellement (Dahua / ISAPI indisponible)
+- CameraDialog : ajout/édition d'une caméra
+- SiteDialog   : ajout/édition d'un site
+
+Les modifications sont appliquées à l'AppConfig en mémoire ; la fenêtre
+principale enregistre (save_config) si l'utilisateur valide, ou recharge
+depuis le disque s'il annule.
+"""
+
+import threading
+
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox,
+                               QFormLayout, QGridLayout, QGroupBox, QHBoxLayout,
+                               QHeaderView, QLabel, QLineEdit, QMessageBox,
+                               QPushButton, QSpinBox, QTableWidget,
+                               QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
+                               QVBoxLayout, QWidget)
+
+from ..config import (LIENS, MARQUES, PROFIL_LABELS, PROFILS, AppConfig, Camera,
+                      Site, purger_cameras_sequences)
+from ..snapshot import lister_canaux_hikvision
+from .icons import icon
+
+_PROFILS_ORDONNES = list(PROFILS)
+
+
+def _profil_defaut(site: Site | None) -> str:
+    return "eco" if (site and site.lien == "4g") else "normal"
+
+
+# ------------------------------------------------------------------ SiteDialog
+
+class SiteDialog(QDialog):
+    def __init__(self, parent=None, site: Site | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Site" if site else "Nouveau site")
+        self._nom = QLineEdit(site.nom if site else "")
+        self._nom.setPlaceholderText("ex. Le Port")
+        self._lien = QComboBox()
+        self._lien.addItems(["Fibre / réseau filaire", "4G (bande passante limitée)"])
+        if site and site.lien == "4g":
+            self._lien.setCurrentIndex(1)
+
+        form = QFormLayout()
+        form.addRow("Nom du site :", self._nom)
+        form.addRow("Type de lien :", self._lien)
+
+        info = QLabel("Sur un site 4G, les nouvelles caméras passent d'office "
+                      "en profil Éco (substream partout).")
+        info.setWordWrap(True)
+        info.setStyleSheet("color: #909090;")
+
+        boutons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        boutons.accepted.connect(self._valider)
+        boutons.rejected.connect(self.reject)
+
+        lay = QVBoxLayout(self)
+        lay.addLayout(form)
+        lay.addWidget(info)
+        lay.addWidget(boutons)
+
+    def _valider(self):
+        if not self._nom.text().strip():
+            QMessageBox.warning(self, "Site", "Le nom est obligatoire.")
+            return
+        self.accept()
+
+    def valeurs(self) -> tuple[str, str]:
+        return self._nom.text().strip(), LIENS[self._lien.currentIndex()]
+
+
+# ---------------------------------------------------------------- CameraDialog
+
+class CameraDialog(QDialog):
+    """Ajout ou édition d'une caméra unique."""
+
+    def __init__(self, cfg: AppConfig, parent=None, camera: Camera | None = None,
+                 site_defaut: Site | None = None):
+        super().__init__(parent)
+        self._cfg = cfg
+        self._camera = camera
+        self.setWindowTitle("Caméra" if camera else "Nouvelle caméra")
+        self.setMinimumWidth(460)
+
+        self._nom = QLineEdit(camera.nom if camera else "")
+        self._nom.setPlaceholderText("ex. Parking entrée")
+
+        self._site = QComboBox()
+        for s in cfg.sites:
+            self._site.addItem(f"{s.nom}{' · 4G' if s.lien == '4g' else ''}", s.id)
+        cible = camera.site if camera else site_defaut
+        if cible:
+            idx = self._site.findData(cible.id)
+            if idx >= 0:
+                self._site.setCurrentIndex(idx)
+
+        self._profil = QComboBox()
+        for p in _PROFILS_ORDONNES:
+            self._profil.addItem(PROFIL_LABELS[p], p)
+        self._profil.setCurrentIndex(_PROFILS_ORDONNES.index(
+            camera.profil if camera else _profil_defaut(cible)))
+
+        self._marque = QComboBox()
+        self._marque.addItems(["Hikvision", "Dahua", "Autre (URLs RTSP libres)"])
+        if camera:
+            self._marque.setCurrentIndex(MARQUES.index(camera.marque))
+
+        # bloc DVR (hikvision/dahua)
+        self._hote = QLineEdit(camera.hote if camera else "")
+        self._hote.setPlaceholderText("IP ou nom d'hôte du DVR")
+        self._port = QSpinBox(); self._port.setRange(1, 65535)
+        self._port.setValue(camera.port if camera else 554)
+        self._canal = QSpinBox(); self._canal.setRange(1, 512)
+        self._canal.setValue(camera.canal if camera else 1)
+        self._port_http = QSpinBox(); self._port_http.setRange(1, 65535)
+        self._port_http.setValue(camera.port_http if camera else 80)
+        self._grp_dvr = QGroupBox("Connexion DVR")
+        f1 = QFormLayout(self._grp_dvr)
+        f1.addRow("Adresse :", self._hote)
+        f1.addRow("Port RTSP :", self._port)
+        f1.addRow("Canal :", self._canal)
+        f1.addRow("Port HTTP (photo) :", self._port_http)
+
+        # bloc custom
+        self._url_main = QLineEdit(camera.url_mainstream if camera else "")
+        self._url_main.setPlaceholderText("rtsp://…  (flux HD)")
+        self._url_sub = QLineEdit(camera.url_substream if camera else "")
+        self._url_sub.setPlaceholderText("rtsp://…  (flux léger)")
+        self._url_snap = QLineEdit(camera.url_snapshot if camera else "")
+        self._url_snap.setPlaceholderText("http://…  (image JPEG, pour le mode photo)")
+        self._grp_custom = QGroupBox("URLs directes")
+        f2 = QFormLayout(self._grp_custom)
+        f2.addRow("URL mainstream :", self._url_main)
+        f2.addRow("URL substream :", self._url_sub)
+        f2.addRow("URL snapshot :", self._url_snap)
+
+        self._user = QLineEdit(camera.user if camera else "")
+        # Le mot de passe n'est JAMAIS réaffiché : à l'édition, le champ reste
+        # vide et le mot de passe existant est conservé si on n'en saisit pas
+        # un nouveau. Pas de bouton « afficher ».
+        self._pwd_existe = bool(camera and camera.password)
+        self._pwd = QLineEdit()
+        self._pwd.setEchoMode(QLineEdit.Password)
+        if self._pwd_existe:
+            self._pwd.setPlaceholderText("•••••••• — laisser vide pour ne pas changer")
+        pwd_row = QHBoxLayout()
+        pwd_row.addWidget(self._pwd, 1)
+
+        self._photo_int = QSpinBox(); self._photo_int.setRange(2, 600)
+        self._photo_int.setSuffix(" s")
+        self._photo_int.setValue(camera.photo_intervalle_s if camera else 10)
+        self._lbl_photo = QLabel("Rafraîchissement photo :")
+
+        form = QFormLayout()
+        form.addRow("Nom :", self._nom)
+        form.addRow("Site :", self._site)
+        form.addRow("Marque :", self._marque)
+        form.addRow("Profil bande passante :", self._profil)
+        form.addRow("Utilisateur DVR :", self._user)
+        form.addRow("Mot de passe :", pwd_row)
+        form.addRow(self._lbl_photo, self._photo_int)
+
+        boutons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        boutons.accepted.connect(self._valider)
+        boutons.rejected.connect(self.reject)
+
+        lay = QVBoxLayout(self)
+        lay.addLayout(form)
+        lay.addWidget(self._grp_dvr)
+        lay.addWidget(self._grp_custom)
+        lay.addWidget(boutons)
+
+        self._marque.currentIndexChanged.connect(self._maj_visibilite)
+        self._profil.currentIndexChanged.connect(self._maj_visibilite)
+        self._site.currentIndexChanged.connect(self._site_change)
+        self._maj_visibilite()
+
+    def _site_change(self):
+        # nouveau site choisi → profil par défaut selon son lien (à la création)
+        if self._camera is None:
+            site = self._cfg.site(self._site.currentData())
+            self._profil.setCurrentIndex(_PROFILS_ORDONNES.index(_profil_defaut(site)))
+
+    def _maj_visibilite(self):
+        custom = self._marque.currentIndex() == 2
+        self._grp_dvr.setVisible(not custom)
+        self._grp_custom.setVisible(custom)
+        photo = _PROFILS_ORDONNES[self._profil.currentIndex()] == "eco-extreme"
+        self._lbl_photo.setVisible(photo)
+        self._photo_int.setVisible(photo)
+        self._url_snap.setEnabled(True)
+        self.adjustSize()
+
+    def _valider(self):
+        if not self._nom.text().strip():
+            QMessageBox.warning(self, "Caméra", "Le nom est obligatoire.")
+            return
+        if self._site.currentData() is None:
+            QMessageBox.warning(self, "Caméra", "Créez d'abord un site.")
+            return
+        custom = self._marque.currentIndex() == 2
+        if custom and not (self._url_main.text().strip() or self._url_sub.text().strip()):
+            QMessageBox.warning(self, "Caméra",
+                                "Renseignez au moins une URL RTSP (main ou sub).")
+            return
+        if not custom and not self._hote.text().strip():
+            QMessageBox.warning(self, "Caméra", "L'adresse du DVR est obligatoire.")
+            return
+        self.accept()
+
+    def appliquer(self) -> Camera:
+        """Crée ou met à jour la caméra à partir du formulaire."""
+        site = self._cfg.site(self._site.currentData())
+        cam = self._camera
+        if cam is None:
+            cam = Camera(id=self._cfg.unique_id(f"{site.id}-{self._nom.text()}"),
+                         nom="", site=site)
+            self._cfg.cameras.append(cam)
+        cam.nom = self._nom.text().strip()
+        cam.site = site
+        cam.profil = _PROFILS_ORDONNES[self._profil.currentIndex()]
+        cam.marque = MARQUES[self._marque.currentIndex()]
+        cam.hote = self._hote.text().strip()
+        cam.port = self._port.value()
+        cam.canal = self._canal.value()
+        cam.port_http = self._port_http.value()
+        cam.user = self._user.text()
+        # champ vide à l'édition = on garde le mot de passe existant
+        nouveau_mdp = self._pwd.text()
+        if nouveau_mdp or not self._pwd_existe:
+            cam.password = nouveau_mdp
+        cam.url_mainstream = self._url_main.text().strip()
+        cam.url_substream = self._url_sub.text().strip()
+        cam.url_snapshot = self._url_snap.text().strip()
+        cam.photo_intervalle_s = self._photo_int.value()
+        return cam
+
+
+# ------------------------------------------------------------------- DvrDialog
+
+class DvrDialog(QDialog):
+    """Ajoute toutes les caméras d'un DVR en une fois."""
+
+    _canaux_prets = Signal(list, str)    # [(canal, nom)], erreur
+
+    def __init__(self, cfg: AppConfig, parent=None, site_defaut: Site | None = None):
+        super().__init__(parent)
+        self._cfg = cfg
+        self.cameras_creees: list[Camera] = []
+        self.setWindowTitle("Ajouter un DVR")
+        self.setMinimumSize(560, 560)
+
+        self._site = QComboBox()
+        for s in cfg.sites:
+            self._site.addItem(f"{s.nom}{' · 4G' if s.lien == '4g' else ''}", s.id)
+        if site_defaut:
+            idx = self._site.findData(site_defaut.id)
+            if idx >= 0:
+                self._site.setCurrentIndex(idx)
+
+        self._marque = QComboBox()
+        self._marque.addItems(["Hikvision", "Dahua"])
+        self._hote = QLineEdit()
+        self._hote.setPlaceholderText("IP ou nom d'hôte du DVR")
+        self._port = QSpinBox(); self._port.setRange(1, 65535); self._port.setValue(554)
+        self._port_http = QSpinBox(); self._port_http.setRange(1, 65535)
+        self._port_http.setValue(80)
+        self._user = QLineEdit()
+        self._pwd = QLineEdit(); self._pwd.setEchoMode(QLineEdit.Password)
+        self._profil = QComboBox()
+        for p in _PROFILS_ORDONNES:
+            self._profil.addItem(PROFIL_LABELS[p], p)
+        self._profil.setCurrentIndex(_PROFILS_ORDONNES.index(
+            _profil_defaut(cfg.site(self._site.currentData()))))
+        self._site.currentIndexChanged.connect(lambda: self._profil.setCurrentIndex(
+            _PROFILS_ORDONNES.index(_profil_defaut(cfg.site(self._site.currentData())))))
+
+        form = QGridLayout()
+        form.addWidget(QLabel("Site :"), 0, 0);        form.addWidget(self._site, 0, 1)
+        form.addWidget(QLabel("Marque :"), 0, 2);      form.addWidget(self._marque, 0, 3)
+        form.addWidget(QLabel("Adresse :"), 1, 0);     form.addWidget(self._hote, 1, 1)
+        form.addWidget(QLabel("Port RTSP :"), 1, 2);   form.addWidget(self._port, 1, 3)
+        form.addWidget(QLabel("Utilisateur :"), 2, 0); form.addWidget(self._user, 2, 1)
+        form.addWidget(QLabel("Mot de passe :"), 2, 2); form.addWidget(self._pwd, 2, 3)
+        form.addWidget(QLabel("Port HTTP :"), 3, 0);   form.addWidget(self._port_http, 3, 1)
+        form.addWidget(QLabel("Profil :"), 3, 2);      form.addWidget(self._profil, 3, 3)
+
+        self._btn_scan = QPushButton(icon("search"), " Interroger le DVR (canaux + noms)")
+        self._btn_scan.clicked.connect(self._scanner)
+        self._nb = QSpinBox(); self._nb.setRange(1, 64); self._nb.setValue(8)
+        btn_manuel = QPushButton("Générer la liste manuellement")
+        btn_manuel.clicked.connect(self._generer_manuel)
+        ligne_scan = QHBoxLayout()
+        ligne_scan.addWidget(self._btn_scan, 2)
+        ligne_scan.addSpacing(12)
+        ligne_scan.addWidget(QLabel("ou"))
+        ligne_scan.addWidget(self._nb)
+        ligne_scan.addWidget(QLabel("canaux :"))
+        ligne_scan.addWidget(btn_manuel, 1)
+
+        self._statut = QLabel("")
+        self._statut.setStyleSheet("color: #909090;")
+
+        self._table = QTableWidget(0, 3)
+        self._table.setHorizontalHeaderLabels(["", "Canal", "Nom de la caméra"])
+        self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self._table.verticalHeader().hide()
+        self._table.setColumnWidth(0, 30)
+        self._table.setColumnWidth(1, 60)
+
+        boutons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        boutons.button(QDialogButtonBox.Ok).setText("Ajouter les caméras cochées")
+        boutons.accepted.connect(self._valider)
+        boutons.rejected.connect(self.reject)
+
+        lay = QVBoxLayout(self)
+        lay.addLayout(form)
+        lay.addLayout(ligne_scan)
+        lay.addWidget(self._statut)
+        lay.addWidget(self._table, 1)
+        lay.addWidget(boutons)
+
+        self._canaux_prets.connect(self._afficher_canaux)
+        self._marque.currentIndexChanged.connect(
+            lambda i: self._btn_scan.setEnabled(i == 0))
+
+    # ------------------------------------------------------------- découverte
+
+    def _scanner(self):
+        hote = self._hote.text().strip()
+        if not hote:
+            QMessageBox.warning(self, "DVR", "Renseignez l'adresse du DVR.")
+            return
+        self._btn_scan.setEnabled(False)
+        self._statut.setText("Interrogation du DVR…")
+        args = (hote, self._port_http.value(), self._user.text(), self._pwd.text())
+
+        def work():
+            canaux, err = lister_canaux_hikvision(*args)
+            self._canaux_prets.emit(canaux, err)
+
+        threading.Thread(target=work, daemon=True, name="scan-dvr").start()
+
+    def _afficher_canaux(self, canaux: list, erreur: str):
+        self._btn_scan.setEnabled(self._marque.currentIndex() == 0)
+        if erreur:
+            self._statut.setText(f"Échec : {erreur} — utilisez la génération manuelle.")
+            return
+        self._statut.setText(f"{len(canaux)} canal/canaux trouvés — décochez ceux "
+                             "à ignorer, ajustez les noms.")
+        self._remplir_table(canaux)
+
+    def _generer_manuel(self):
+        self._statut.setText("Liste générée — décochez les canaux inutilisés, "
+                             "renommez les caméras.")
+        self._remplir_table([(i, f"Caméra {i}") for i in range(1, self._nb.value() + 1)])
+
+    def _remplir_table(self, canaux: list):
+        self._table.setRowCount(0)
+        for canal, nom in canaux:
+            r = self._table.rowCount()
+            self._table.insertRow(r)
+            coche = QTableWidgetItem()
+            coche.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            coche.setCheckState(Qt.Checked)
+            num = QTableWidgetItem(str(canal))
+            num.setFlags(Qt.ItemIsEnabled)
+            self._table.setItem(r, 0, coche)
+            self._table.setItem(r, 1, num)
+            self._table.setItem(r, 2, QTableWidgetItem(nom))
+
+    # ------------------------------------------------------------- validation
+
+    def _valider(self):
+        if self._site.currentData() is None:
+            QMessageBox.warning(self, "DVR", "Créez d'abord un site.")
+            return
+        if not self._hote.text().strip():
+            QMessageBox.warning(self, "DVR", "L'adresse du DVR est obligatoire.")
+            return
+        lignes = [r for r in range(self._table.rowCount())
+                  if self._table.item(r, 0).checkState() == Qt.Checked]
+        if not lignes:
+            QMessageBox.warning(self, "DVR", "Aucun canal coché — interrogez le DVR "
+                                             "ou générez la liste manuellement.")
+            return
+
+        site = self._cfg.site(self._site.currentData())
+        marque = MARQUES[self._marque.currentIndex()]
+        taken = {s.id for s in self._cfg.sites} | {c.id for c in self._cfg.cameras}
+        for r in lignes:
+            canal = int(self._table.item(r, 1).text())
+            nom = self._table.item(r, 2).text().strip() or f"Caméra {canal}"
+            cam_id = self._cfg.unique_id(f"{site.id}-{nom}", taken)
+            taken.add(cam_id)
+            cam = Camera(
+                id=cam_id, nom=nom, site=site,
+                profil=self._profil.currentData(),
+                marque=marque,
+                hote=self._hote.text().strip(),
+                port=self._port.value(),
+                canal=canal,
+                port_http=self._port_http.value(),
+                user=self._user.text(),
+                password=self._pwd.text(),
+            )
+            self._cfg.cameras.append(cam)
+            self.cameras_creees.append(cam)
+        self.accept()
+
+
+# ---------------------------------------------------------------- ConfigDialog
+
+class ConfigDialog(QDialog):
+    """Gestionnaire ⚙ : tout se configure ici, de A à Z."""
+
+    def __init__(self, cfg: AppConfig, parent=None):
+        super().__init__(parent)
+        self._cfg = cfg
+        self.modifie = False
+        self.setWindowTitle("Configuration")
+        self.setWindowIcon(icon("settings"))
+        self.setMinimumSize(640, 480)
+
+        self._tree = QTreeWidget()
+        self._tree.setHeaderLabels(["Sites / Caméras", "Détails"])
+        self._tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        self._tree.itemDoubleClicked.connect(lambda *_: self._modifier())
+
+        btn_dvr = QPushButton(icon("plus"), " Ajouter un DVR…")
+        btn_dvr.clicked.connect(self._ajouter_dvr)
+        btn_cam = QPushButton(icon("plus"), " Caméra seule…")
+        btn_cam.clicked.connect(self._ajouter_camera)
+        btn_site = QPushButton(icon("plus"), " Site…")
+        btn_site.clicked.connect(self._ajouter_site)
+        btn_edit = QPushButton(icon("pencil"), " Modifier…")
+        btn_edit.clicked.connect(self._modifier)
+        btn_del = QPushButton(icon("trash"), " Supprimer")
+        btn_del.clicked.connect(self._supprimer)
+
+        self._rot = QSpinBox()
+        self._rot.setRange(3, 3600)
+        self._rot.setSuffix(" s")
+        self._rot.setValue(cfg.rotation_duree_s)
+
+        droite = QVBoxLayout()
+        droite.addWidget(btn_dvr)
+        droite.addWidget(btn_cam)
+        droite.addWidget(btn_site)
+        droite.addSpacing(16)
+        droite.addWidget(btn_edit)
+        droite.addWidget(btn_del)
+        droite.addSpacing(16)
+        droite.addWidget(QLabel("Durée de rotation :"))
+        droite.addWidget(self._rot)
+        droite.addStretch()
+
+        centre = QHBoxLayout()
+        centre.addWidget(self._tree, 1)
+        centre.addLayout(droite)
+
+        note = QLabel("Les identifiants sont stockés dans le fichier local de "
+                      "l'application — utilisez un compte DVR en lecture seule.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #909090;")
+
+        boutons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        boutons.button(QDialogButtonBox.Ok).setText("Enregistrer")
+        boutons.accepted.connect(self._terminer)
+        boutons.rejected.connect(self.reject)
+
+        lay = QVBoxLayout(self)
+        lay.addLayout(centre, 1)
+        lay.addWidget(note)
+        lay.addWidget(boutons)
+
+        self._rafraichir()
+
+    # -------------------------------------------------------------- affichage
+
+    def _rafraichir(self):
+        self._tree.clear()
+        for site in self._cfg.sites:
+            it = QTreeWidgetItem([site.nom, "site 4G" if site.lien == "4g" else "site fibre"])
+            it.setData(0, Qt.UserRole, ("site", site.id))
+            for cam in [c for c in self._cfg.cameras if c.site.id == site.id]:
+                detail = (f"{cam.marque} · {cam.hote or 'URL libre'}"
+                          + (f" · canal {cam.canal}" if cam.marque != "custom" else "")
+                          + f" · {cam.profil}")
+                child = QTreeWidgetItem([cam.nom, detail])
+                child.setData(0, Qt.UserRole, ("camera", cam.id))
+                it.addChild(child)
+            self._tree.addTopLevelItem(it)
+        self._tree.expandAll()
+
+    def _selection(self) -> tuple[str, str] | None:
+        it = self._tree.currentItem()
+        return it.data(0, Qt.UserRole) if it else None
+
+    def _site_selectionne(self) -> Site | None:
+        sel = self._selection()
+        if not sel:
+            return None
+        if sel[0] == "site":
+            return self._cfg.site(sel[1])
+        cam = self._cfg.camera(sel[1])
+        return cam.site if cam else None
+
+    # ---------------------------------------------------------------- actions
+
+    def _exiger_site(self) -> bool:
+        if self._cfg.sites:
+            return True
+        QMessageBox.information(self, "Configuration",
+                                "Commencez par créer un site (bouton « Site… »).")
+        return False
+
+    def _ajouter_site(self):
+        dlg = SiteDialog(self)
+        if dlg.exec():
+            nom, lien = dlg.valeurs()
+            self._cfg.sites.append(Site(id=self._cfg.unique_id(nom), nom=nom, lien=lien))
+            self.modifie = True
+            self._rafraichir()
+
+    def _ajouter_dvr(self):
+        if not self._exiger_site():
+            return
+        dlg = DvrDialog(self._cfg, self, site_defaut=self._site_selectionne())
+        if dlg.exec():
+            self.modifie = True
+            self._rafraichir()
+
+    def _ajouter_camera(self):
+        if not self._exiger_site():
+            return
+        dlg = CameraDialog(self._cfg, self, site_defaut=self._site_selectionne())
+        if dlg.exec():
+            dlg.appliquer()
+            self.modifie = True
+            self._rafraichir()
+
+    def _modifier(self):
+        sel = self._selection()
+        if not sel:
+            return
+        kind, ident = sel
+        if kind == "site":
+            site = self._cfg.site(ident)
+            dlg = SiteDialog(self, site)
+            if dlg.exec():
+                site.nom, site.lien = dlg.valeurs()
+                self.modifie = True
+                self._rafraichir()
+        else:
+            cam = self._cfg.camera(ident)
+            dlg = CameraDialog(self._cfg, self, camera=cam)
+            if dlg.exec():
+                dlg.appliquer()
+                self.modifie = True
+                self._rafraichir()
+
+    def _supprimer(self):
+        sel = self._selection()
+        if not sel:
+            return
+        kind, ident = sel
+        if kind == "site":
+            site = self._cfg.site(ident)
+            nb = len([c for c in self._cfg.cameras if c.site.id == ident])
+            if QMessageBox.question(
+                    self, "Supprimer",
+                    f"Supprimer le site « {site.nom} » et ses {nb} caméra(s) ?"
+            ) != QMessageBox.Yes:
+                return
+            retirees = {c.id for c in self._cfg.cameras if c.site.id == ident}
+            self._cfg.cameras = [c for c in self._cfg.cameras if c.site.id != ident]
+            self._cfg.sites = [s for s in self._cfg.sites if s.id != ident]
+            purger_cameras_sequences(self._cfg, retirees)
+        else:
+            cam = self._cfg.camera(ident)
+            if QMessageBox.question(self, "Supprimer",
+                                    f"Supprimer la caméra « {cam.nom} » ?") != QMessageBox.Yes:
+                return
+            self._cfg.cameras = [c for c in self._cfg.cameras if c.id != ident]
+            purger_cameras_sequences(self._cfg, {ident})
+        self.modifie = True
+        self._rafraichir()
+
+    def _terminer(self):
+        if self._rot.value() != self._cfg.rotation_duree_s:
+            self._cfg.rotation_duree_s = self._rot.value()
+            self.modifie = True
+        self.accept()

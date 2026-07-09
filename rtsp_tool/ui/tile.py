@@ -1,0 +1,429 @@
+"""Tuile vidéo : un flux RTSP, son état et sa politique de reconnexion.
+
+Machine d'états (patterns repris de vision-ai/capture.py) :
+  IDLE → CONNECTING → PLAYING
+                    ↘ BACKOFF (timeout/réseau : 5 s → 10 min, ×2, reset au succès)
+                    ↘ AUTH_FAILED (401 : ARRÊT DÉFINITIF — jamais de retry auto,
+                       sinon lockout du compte côté DVR Hikvision)
+
+Chaque tuile a sa propre instance libmpv (thread mpv indépendant) : un flux qui
+meurt n'affecte jamais les autres tuiles.
+"""
+
+import logging
+import os
+import threading
+from collections import deque
+from datetime import datetime
+from enum import Enum, auto
+from pathlib import Path
+
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QMenu, QSizePolicy,
+                               QStackedLayout, QVBoxLayout, QWidget)
+
+from ..config import Camera, mask_url
+from ..player import MPV_IMPORT_ERROR, create_player, mpv_disponible
+from ..probe import classify_text, ffprobe_available, probe_rtsp
+
+logger = logging.getLogger(__name__)
+
+CONNECT_TIMEOUT_S = 15
+BACKOFF_MIN = 5
+BACKOFF_MAX = 600
+BACKOFF_FACTOR = 2
+
+KIND_LABELS = {
+    "timeout": "délai dépassé",
+    "network": "site injoignable",
+    "other": "erreur de lecture",
+}
+
+
+class TileState(Enum):
+    IDLE = auto()
+    CONNECTING = auto()
+    PLAYING = auto()
+    BACKOFF = auto()
+    AUTH_FAILED = auto()
+    NO_PLAYER = auto()      # libmpv absent
+
+
+_DOT_COLORS = {
+    TileState.IDLE: "#808080",
+    TileState.CONNECTING: "#e0a030",
+    TileState.PLAYING: "#3fbf5f",
+    TileState.BACKOFF: "#e0a030",
+    TileState.AUTH_FAILED: "#e04040",
+    TileState.NO_PLAYER: "#e04040",
+}
+
+
+def snapshot_path(camera) -> str:
+    """Chemin horodaté pour une capture manuelle (Images/RTSP-TOOL/)."""
+    dossier = Path.home() / "Pictures" / "RTSP-TOOL"
+    dossier.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return str(dossier / f"{camera.id}-{stamp}.jpg")
+
+
+def format_debit(bps: float) -> str:
+    if bps >= 1_000_000:
+        return f"{bps / 1_000_000:.1f} Mb/s"
+    return f"{bps / 1000:.0f} kb/s"
+
+
+class _VideoSurface(QWidget):
+    """Widget natif dans lequel mpv dessine (via wid)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_DontCreateNativeAncestors)
+        self.setAttribute(Qt.WA_NativeWindow)
+        self.setStyleSheet("background-color: black;")
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+
+class VideoTile(QFrame):
+    """Une caméra affichée, dans une vue donnée ('grille' ou 'mono')."""
+
+    double_clicked = Signal(str)            # camera_id
+    state_changed = Signal()
+    snapshot_saved = Signal(str)            # chemin de la capture manuelle
+
+    # signaux internes — émis depuis le thread mpv / threads de probe,
+    # délivrés sur le thread Qt (queued)
+    _evt_playing = Signal()
+    _evt_ended = Signal(str)
+    _probe_done = Signal(str, str)          # kind, detail
+
+    def __init__(self, camera: Camera, vue: str, parent=None):
+        super().__init__(parent)
+        self.camera = camera
+        self.vue = vue
+        self.state = TileState.IDLE
+        self.debit_bps = 0.0
+
+        self._player = None
+        self._url = camera.url_pour_vue(vue)
+        self._stopping = False
+        self._failures = 0
+        self._probing = False
+        self._log_tail = deque(maxlen=80)   # dernières lignes mpv pour diagnostic
+
+        self._build_ui()
+
+        self._debit_timer = QTimer(self)
+        self._debit_timer.setInterval(2000)
+        self._debit_timer.timeout.connect(self._update_debit)
+
+        self._connect_timer = QTimer(self)
+        self._connect_timer.setSingleShot(True)
+        self._connect_timer.setInterval(CONNECT_TIMEOUT_S * 1000)
+        self._connect_timer.timeout.connect(self._on_connect_timeout)
+
+        self._retry_timer = QTimer(self)
+        self._retry_timer.setSingleShot(True)
+        self._retry_timer.timeout.connect(self._connect)
+
+        self._preventive_timer = QTimer(self)
+        self._preventive_timer.timeout.connect(self._preventive_reconnect)
+
+        self._evt_playing.connect(self._on_playing)
+        self._evt_ended.connect(self._on_ended)
+        self._probe_done.connect(self._on_probe_done)
+
+    # ------------------------------------------------------------------ UI
+
+    def _build_ui(self):
+        self.setFrameShape(QFrame.StyledPanel)
+        self.setStyleSheet(
+            "VideoTile { background-color: #101010; border: 1px solid #303030; }")
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        header = QWidget()
+        header.setStyleSheet("background-color: #1c1c1c;")
+        h = QHBoxLayout(header)
+        h.setContentsMargins(6, 2, 6, 2)
+        self._dot = QLabel()
+        self._dot.setFixedSize(10, 10)
+        self._title = QLabel(f"{self.camera.nom} — {self.camera.site.nom}")
+        self._title.setStyleSheet("color: #d0d0d0; font-weight: bold;")
+        self._flux_label = QLabel(self._flux_text())
+        self._flux_label.setStyleSheet("color: #707070;")
+        h.addWidget(self._dot)
+        h.addWidget(self._title)
+        h.addStretch()
+        h.addWidget(self._flux_label)
+        root.addWidget(header)
+
+        body = QWidget()
+        self._stack = QStackedLayout(body)
+        self._stack.setStackingMode(QStackedLayout.StackOne)
+        self._video = _VideoSurface()
+        self._status = QLabel()
+        self._status.setAlignment(Qt.AlignCenter)
+        self._status.setWordWrap(True)
+        self._status.setStyleSheet(
+            "color: #a0a0a0; background-color: #101010; padding: 12px;")
+        self._stack.addWidget(self._status)   # index 0
+        self._stack.addWidget(self._video)    # index 1
+        root.addWidget(body, 1)
+
+        self._set_state(TileState.IDLE, "En attente")
+
+    def _flux_text(self) -> str:
+        flux = self.camera.flux_pour_vue(self.vue)
+        eco = " · éco" if self.camera.profil.startswith("eco") else ""
+        return ("HD" if flux == "main" else "sub") + eco
+
+    def _set_state(self, state: TileState, message: str = ""):
+        self.state = state
+        self._dot.setStyleSheet(
+            f"background-color: {_DOT_COLORS[state]}; border-radius: 5px;")
+        if state == TileState.PLAYING:
+            self._stack.setCurrentIndex(1)
+        else:
+            self._status.setText(message)
+            self._stack.setCurrentIndex(0)
+        self.state_changed.emit()
+
+    def mouseDoubleClickEvent(self, event):
+        self.double_clicked.emit(self.camera.id)
+        event.accept()
+
+    def contextMenuEvent(self, event):
+        from .icons import icon
+        menu = QMenu(self)
+        act = menu.addAction(icon("camera"), "Enregistrer une image")
+        act.setEnabled(self.state == TileState.PLAYING)
+        if menu.exec(event.globalPos()) is act:
+            self._save_snapshot()
+
+    def _save_snapshot(self):
+        if self._player is None or self.state != TileState.PLAYING:
+            return
+        path = snapshot_path(self.camera)
+        try:
+            self._player.command("screenshot-to-file", path, "video")
+            self.snapshot_saved.emit(path)
+        except Exception as e:
+            logger.warning(f"[{self.camera.id}] capture impossible : {e}")
+
+    def _update_debit(self):
+        """Affiche le débit réseau réellement consommé par la tuile."""
+        if self._player is None or self.state != TileState.PLAYING:
+            return
+        bps = 0.0
+        try:
+            speed = self._player.cache_speed          # octets/s lus sur le réseau
+            if speed:
+                bps = float(speed) * 8
+        except Exception:
+            try:
+                bps = float(self._player.video_bitrate or 0)
+            except Exception:
+                bps = 0.0
+        self.debit_bps = bps
+        base = self._flux_text()
+        self._flux_label.setText(f"{base} · {format_debit(bps)}" if bps else base)
+
+    # ---------------------------------------------------------- cycle de vie
+
+    def start(self):
+        """(Re)démarre le flux. Ne retente jamais un échec d'authentification."""
+        if self.state == TileState.AUTH_FAILED:
+            return
+        if not mpv_disponible():
+            self._set_state(TileState.NO_PLAYER,
+                            f"libmpv introuvable — voir README\n({MPV_IMPORT_ERROR})")
+            return
+        self._stopping = False
+        self._connect()
+
+    def stop(self, message: str = "En pause — flux fermé"):
+        """Ferme le flux réseau (caméra hors écran = zéro connexion)."""
+        self._stopping = True
+        self._connect_timer.stop()
+        self._retry_timer.stop()
+        self._preventive_timer.stop()
+        self._debit_timer.stop()
+        self.debit_bps = 0.0
+        self._flux_label.setText(self._flux_text())
+        if self._player is not None:
+            try:
+                self._player.command("stop")
+            except Exception:
+                pass
+        if self.state not in (TileState.AUTH_FAILED, TileState.NO_PLAYER):
+            self._set_state(TileState.IDLE, message)
+
+    def shutdown(self):
+        """Destruction de la tuile : libère l'instance mpv."""
+        self.stop()
+        if self._player is not None:
+            try:
+                self._player.terminate()
+            except Exception:
+                pass
+            self._player = None
+
+    def retry_auth(self):
+        """Réarmement MANUEL après correction des identifiants (action utilisateur
+        explicite — seul cas où AUTH_FAILED est levé)."""
+        if self.state == TileState.AUTH_FAILED:
+            self._failures = 0
+            self._set_state(TileState.IDLE, "Réessai…")
+            self.start()
+
+    # ------------------------------------------------------------- connexion
+
+    def _ensure_player(self):
+        if self._player is not None:
+            return
+        self._player = create_player(self._video.winId(), self._on_mpv_log)
+
+        # les callbacks arrivent depuis le thread mpv et peuvent tomber pendant
+        # la destruction de la tuile → on ignore l'émission si l'objet Qt est mort
+        @self._player.event_callback("file-loaded")
+        def _loaded(_evt):
+            try:
+                self._evt_playing.emit()
+            except RuntimeError:
+                pass
+
+        @self._player.event_callback("end-file")
+        def _ended(evt):
+            reason = ""
+            try:
+                reason = str(getattr(evt.data, "reason", "") or "")
+            except Exception:
+                pass
+            try:
+                self._evt_ended.emit(reason)
+            except RuntimeError:
+                pass
+
+    def _connect(self):
+        if self._stopping or self.state == TileState.AUTH_FAILED:
+            return
+        try:
+            self._ensure_player()
+        except Exception as e:
+            self._set_state(TileState.NO_PLAYER, f"Erreur lecteur : {e}")
+            return
+        self._set_state(TileState.CONNECTING, "Connexion…")
+        self._log_tail.clear()
+        try:
+            self._player.play(self._url)
+        except Exception as e:
+            logger.warning(f"[{self.camera.id}] loadfile a échoué : {e}")
+            self._handle_failure()
+            return
+        self._connect_timer.start()
+
+    def _on_mpv_log(self, level, component, message):
+        # appelé depuis le thread mpv — deque est thread-safe pour append
+        if level in ("error", "warn", "fatal"):
+            self._log_tail.append(f"{component}: {message}")
+
+    def _on_playing(self):
+        if self._stopping:
+            return
+        self._connect_timer.stop()
+        if self._failures > 0:
+            logger.info(f"[{self.camera.id}] reconnecté après {self._failures} échec(s)")
+        self._failures = 0
+        self._set_state(TileState.PLAYING)
+        self._debit_timer.start()
+        if self.camera.reconnexion_preventive_s > 0:
+            self._preventive_timer.start(self.camera.reconnexion_preventive_s * 1000)
+
+    def _on_ended(self, reason: str):
+        if self._stopping or self.state in (TileState.AUTH_FAILED, TileState.IDLE):
+            return
+        if "stop" in reason.lower():
+            return
+        self._connect_timer.stop()
+        self._handle_failure()
+
+    def _on_connect_timeout(self):
+        if self._stopping or self.state != TileState.CONNECTING:
+            return
+        logger.warning(f"[{self.camera.id}] timeout de connexion ({CONNECT_TIMEOUT_S}s) "
+                       f"sur {mask_url(self._url)}")
+        try:
+            self._player.command("stop")
+        except Exception:
+            pass
+        self._handle_failure(kind_hint="timeout")
+
+    def _preventive_reconnect(self):
+        if self.state == TileState.PLAYING and not self._stopping:
+            logger.info(f"[{self.camera.id}] reconnexion préventive")
+            self._connect()
+
+    # ------------------------------------------------------------- diagnostic
+
+    def _handle_failure(self, kind_hint: str = ""):
+        """Classe l'échec : auth → stop définitif ; sinon backoff exponentiel."""
+        log_text = "\n".join(self._log_tail)
+        kind = classify_text(log_text)
+
+        if kind == "auth":
+            self._enter_auth_failed(log_text[-200:])
+            return
+
+        # logs mpv peu parlants → ffprobe (si présent) tranche en arrière-plan
+        if kind == "other" and not kind_hint and ffprobe_available() and not self._probing:
+            self._probing = True
+            url = self._url
+            def work():
+                k, detail = probe_rtsp(url)
+                try:
+                    self._probe_done.emit(k, detail)
+                except RuntimeError:
+                    pass
+            threading.Thread(target=work, daemon=True, name=f"probe-{self.camera.id}").start()
+            self._set_state(TileState.CONNECTING, "Diagnostic…")
+            return
+
+        self._schedule_retry(kind_hint or kind)
+
+    def _on_probe_done(self, kind: str, detail: str):
+        self._probing = False
+        if self._stopping or self.state == TileState.AUTH_FAILED:
+            return
+        if kind == "auth":
+            self._enter_auth_failed(detail[:200])
+        elif kind == "ok":
+            # le flux répond : l'échec était transitoire
+            self._schedule_retry("other")
+        else:
+            self._schedule_retry(kind if kind in KIND_LABELS else "other")
+
+    def _enter_auth_failed(self, detail: str):
+        logger.error(
+            f"[{self.camera.id}] 401 UNAUTHORIZED sur {mask_url(self._url)} — "
+            f"ARRÊT DÉFINITIF des tentatives (risque de lockout du compte DVR). "
+            f"Corriger les identifiants puis recharger la config. {detail}")
+        self._connect_timer.stop()
+        self._retry_timer.stop()
+        self._set_state(
+            TileState.AUTH_FAILED,
+            "Identifiants refusés (401)\n"
+            "Tentatives stoppées pour protéger le compte DVR.\n"
+            "Corriger via le bouton Configuration.")
+
+    def _schedule_retry(self, kind: str):
+        self._failures += 1
+        delay = min(BACKOFF_MIN * (BACKOFF_FACTOR ** (self._failures - 1)), BACKOFF_MAX)
+        label = KIND_LABELS.get(kind, "erreur de lecture")
+        logger.warning(f"[{self.camera.id}] échec ({kind}) n°{self._failures} sur "
+                       f"{mask_url(self._url)} — nouvel essai dans {delay}s")
+        self._set_state(TileState.BACKOFF,
+                        f"Échec : {label}\nNouvel essai dans {delay}s "
+                        f"(tentative {self._failures})")
+        self._retry_timer.start(delay * 1000)
