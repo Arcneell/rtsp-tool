@@ -2,89 +2,89 @@
 
 # RTSP-TOOL
 
-**Visionneuse de vidéosurveillance multi-sites, pensée pour les réseaux contraints.**
+**Multi-site video-surveillance viewer, built for bandwidth-constrained networks.**
 
-Lecture de flux RTSP (DVR **Hikvision** / **Dahua**) en grille ou plein écran, avec
-rotation automatique, séquences configurables et une gestion fine de la bande passante.
-Application desktop autonome — *sans serveur, sans enregistrement.*
+View RTSP streams (**Hikvision** / **Dahua** DVRs) in a grid or full screen, with
+automatic rotation, configurable sequences and fine-grained bandwidth control.
+A standalone desktop app — *no server, no recording.*
 
-[![Licence MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
-[![Plateformes](https://img.shields.io/badge/plateformes-Windows%20%7C%20Linux-informational.svg)](#installation)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux-informational.svg)](#installation)
 [![Python](https://img.shields.io/badge/python-3.11%2B-3776ab.svg)](https://www.python.org/)
 [![UI](https://img.shields.io/badge/UI-PySide6%20(Qt%206)-41cd52.svg)](https://doc.qt.io/qtforpython/)
-[![Moteur vidéo](https://img.shields.io/badge/vidéo-libmpv-ff5555.svg)](https://mpv.io/)
+[![Video engine](https://img.shields.io/badge/video-libmpv-ff5555.svg)](https://mpv.io/)
 
 </div>
 
 ---
 
-## Sommaire
+## Table of contents
 
-- [Pourquoi cet outil](#pourquoi-cet-outil)
-- [Fonctionnalités](#fonctionnalités)
-- [Gestion de la bande passante](#gestion-de-la-bande-passante-le-cœur-du-projet)
+- [Why this tool](#why-this-tool)
+- [Features](#features)
+- [Bandwidth management](#bandwidth-management--the-heart-of-the-project)
 - [Installation](#installation)
 - [Configuration](#configuration)
-- [Packaging & déploiement](#packaging--déploiement)
+- [Packaging & deployment](#packaging--deployment)
 - [Architecture](#architecture)
-- [Pile technique](#pile-technique)
-- [Feuille de route](#feuille-de-route)
-- [Licence](#licence)
+- [Tech stack](#tech-stack)
+- [Roadmap](#roadmap)
+- [License](#license)
 
-## Pourquoi cet outil
+## Why this tool
 
-Superviser des dizaines de caméras réparties sur plusieurs sites — certains en fibre,
-d'autres en 4G — sans saturer le réseau ni monter une infrastructure serveur.
+Monitoring dozens of cameras spread across multiple sites — some on fiber, others on
+4G — without saturating the network or standing up server infrastructure.
 
-RTSP-TOOL est un **client desktop autonome** : chaque poste lit directement les DVR,
-on l'installe via un `.exe` (Windows) ou un `.deb` (Linux), et tout se configure
-**dans l'interface**. Le parti pris central : **c'est le flux qu'on demande au DVR qui
-décide du débit**, jamais le poste — d'où une consommation réseau maîtrisée par
-conception.
+RTSP-TOOL is a **standalone desktop client**: each workstation reads the DVRs directly,
+you install it via an `.exe` (Windows) or a `.deb` (Linux), and everything is configured
+**in the interface**. The core design choice: **the stream you request from the DVR is
+what decides the bitrate**, never the workstation — so network usage is controlled by
+design.
 
-## Fonctionnalités
+## Features
 
 | | |
 |---|---|
-| **Vues** | Grille adaptative (jusqu'à 4×4) et plein écran mono-caméra, bascule au double-clic |
-| **Rotation** | Défilement automatique des pages de la grille (ou des caméras en mono), durée réglable |
-| **Séquences** | « Boucles » configurables : suite d'étapes (grille ou mono + caméras + durée) jouées en continu, éditeur intégré |
-| **Profils bande passante** | Par caméra : *Normal*, *Éco* (4G), *Éco extrême* (mode photo) |
-| **Multi-écrans** | Plein écran sur le moniteur de son choix |
-| **Découverte DVR** | Ajout d'un DVR entier : les canaux et leurs noms sont récupérés via l'API ISAPI Hikvision |
-| **Robustesse** | Reconnexion à backoff exponentiel, arrêt sur erreur d'authentification (anti-verrouillage de compte) |
-| **Confort** | Capture d'image, débit affiché par tuile et au total, thème sombre |
-| **Sécurité** | Mots de passe jamais réaffichés dans l'UI, brouillés dans le fichier de config |
+| **Views** | Adaptive grid (up to 4×4) and full-screen single camera, toggle on double-click |
+| **Rotation** | Automatic cycling through grid pages (or through cameras in single view), adjustable interval |
+| **Sequences** | Configurable "loops": a series of steps (grid or single + cameras + duration) played continuously, with a built-in editor |
+| **Bandwidth profiles** | Per camera: *Normal*, *Eco* (4G), *Extreme eco* (photo mode) |
+| **Multi-monitor** | Full screen on the display of your choice |
+| **DVR discovery** | Add a whole DVR at once: channels and their names are retrieved via the Hikvision ISAPI |
+| **Resilience** | Exponential-backoff reconnection, stop on authentication failure (prevents account lockout) |
+| **Convenience** | Snapshot capture, per-tile and total bitrate display, dark theme |
+| **Security** | Passwords never shown again in the UI, obfuscated in the config file |
 
-## Gestion de la bande passante — le cœur du projet
+## Bandwidth management — the heart of the project
 
-Le débit consommé dépend du **flux demandé au DVR**, pas du lecteur. RTSP-TOOL joue
-uniquement sur *quel* flux ouvrir et *quand* — zéro transcodage, aucun flux ouvert
-hors écran.
+The bitrate consumed depends on the **stream requested from the DVR**, not on the player.
+RTSP-TOOL only decides *which* stream to open and *when* — zero transcoding, no stream
+kept open off-screen.
 
-| Profil | Vue grille | Vue mono | Cible |
-|--------|-----------|----------|-------|
-| **Normal** | Substream | Mainstream (HD) | Sites bien connectés (fibre) |
-| **Éco** | Substream | Substream | Liens limités (4G) |
-| **Éco extrême** | **Mode photo** — snapshot JPEG rafraîchi toutes les *N* secondes (quelques ko) | Substream | Liens 4G très contraints |
+| Profile | Grid view | Single view | Target |
+|---------|-----------|-------------|--------|
+| **Normal** | Substream | Mainstream (HD) | Well-connected sites (fiber) |
+| **Eco** | Substream | Substream | Limited links (4G) |
+| **Extreme eco** | **Photo mode** — JPEG snapshot refreshed every *N* seconds (a few KB) | Substream | Very constrained 4G links |
 
-Principes appliqués partout :
+Principles applied everywhere:
 
-- 🔌 **Caméra hors écran = zéro connexion.** Rotations et séquences ferment les flux
-  précédents avant d'ouvrir les suivants.
-- 📉 **Mode photo** pour les liens saturés : une tuile passe de ~300 kbps continus à
-  quelques ko par image.
-- 🖥️ **Upscaling soigné** des substreams (mpv `ewa_lanczossharp`) pour rester lisibles
-  une fois agrandis.
-- 🔒 **RTSP sur TCP**, lecture directe H.264/H.265 sans réencodage.
+- 🔌 **Off-screen camera = zero connection.** Rotation and sequences close the previous
+  streams before opening the next ones.
+- 📉 **Photo mode** for saturated links: a tile drops from ~300 kbps continuous to a few
+  KB per image.
+- 🖥️ **Careful upscaling** of substreams (mpv `ewa_lanczossharp`) so they stay legible
+  when enlarged.
+- 🔒 **RTSP over TCP**, direct H.264/H.265 playback with no re-encoding.
 
 ## Installation
 
-> **Prérequis :** Python 3.11+ et **libmpv** (moteur vidéo).
-> - *Windows* : placer `libmpv-2.dll` dans un dossier `lib/` à la racine
->   (archive `mpv-dev-x86_64-…` des [builds mpv](https://github.com/shinchiro/mpv-winbuild-cmake/releases)).
-> - *Debian/Ubuntu* : `sudo apt install libmpv2` — *Fedora* : `sudo dnf install mpv-libs`.
-> - *Optionnel :* `ffprobe` (paquet `ffmpeg`) affine le diagnostic des pannes.
+> **Requirements:** Python 3.11+ and **libmpv** (video engine).
+> - *Windows*: place `libmpv-2.dll` in a `lib/` folder at the project root
+>   (`mpv-dev-x86_64-…` archive from the [mpv builds](https://github.com/shinchiro/mpv-winbuild-cmake/releases)).
+> - *Debian/Ubuntu*: `sudo apt install libmpv2` — *Fedora*: `sudo dnf install mpv-libs`.
+> - *Optional:* `ffprobe` (from the `ffmpeg` package) improves failure diagnostics.
 
 ```bash
 git clone https://github.com/Arcneell/rtsp-tool.git
@@ -93,38 +93,38 @@ pip install -r requirements.txt
 python run.py
 ```
 
-Au premier lancement, la fenêtre **Configuration** s'ouvre pour ajouter sites et DVR.
+On first launch, the **Configuration** window opens so you can add sites and DVRs.
 
 ## Configuration
 
-Tout se gère **dans l'interface** — aucun fichier à éditer à la main :
+Everything is managed **in the interface** — no files to edit by hand:
 
-1. **Ajouter un site** (fibre ou 4G).
-2. **Ajouter un DVR** : adresse + identifiants, puis découverte automatique des canaux
-   (Hikvision) ou génération manuelle (Dahua). Toutes les caméras sont créées d'un coup.
-3. Cocher les caméras à afficher, composer des boucles, régler la rotation.
+1. **Add a site** (fiber or 4G).
+2. **Add a DVR**: address + credentials, then automatic channel discovery (Hikvision)
+   or manual generation (Dahua). All cameras are created at once.
+3. Tick the cameras to display, build loops, set the rotation.
 
-La configuration est stockée dans le profil utilisateur
-(`%APPDATA%\RTSP-TOOL\config.yaml` sous Windows,
-`~/.config/rtsp-tool/config.yaml` sous Linux). Un `config.yaml` placé à côté de
-l'exécutable prend la priorité (**mode portable** pour livrer une config commune).
+The configuration is stored in the user profile
+(`%APPDATA%\RTSP-TOOL\config.yaml` on Windows,
+`~/.config/rtsp-tool/config.yaml` on Linux). A `config.yaml` placed next to the
+executable takes priority (**portable mode**, to ship a shared configuration).
 
-> **Note de sécurité** — les mots de passe DVR ne sont jamais réaffichés dans l'interface
-> et sont brouillés dans le fichier. Il s'agit d'un brouillage local (anti-lecture
-> fortuite), *pas* d'un chiffrement fort : la clé est embarquée pour que la config reste
-> déployable telle quelle. Utilisez un compte DVR **en lecture seule** dédié à l'outil.
+> **Security note** — DVR passwords are never shown again in the interface and are
+> obfuscated in the file. This is local obfuscation (against casual reading), *not*
+> strong encryption: the key is embedded so the config stays deployable as-is. Use a
+> **read-only** DVR account dedicated to the tool.
 
-## Packaging & déploiement
+## Packaging & deployment
 
-Guide complet : **[packaging/DEPLOIEMENT.md](packaging/DEPLOIEMENT.md)** (build, signature
-de l'exe Windows, construction du `.deb` avec icône et entrée de menu).
+Full guide: **[packaging/DEPLOIEMENT.md](packaging/DEPLOIEMENT.md)** (build, Windows exe
+signing, `.deb` build with icon and menu entry).
 
 ```bash
-# Exécutable Windows
+# Windows executable
 pyinstaller --noconfirm --windowed --name RTSP-Tool --icon packaging/rtsp-tool.ico \
     --add-binary "lib/libmpv-2.dll;." run.py
 
-# Paquet .deb (via Docker, fonctionne aussi depuis Windows)
+# .deb package (via Docker, works from Windows too)
 docker run --rm -v "${PWD}:/src" -w /src debian:12 bash packaging/build_deb.sh
 ```
 
@@ -132,44 +132,44 @@ docker run --rm -v "${PWD}:/src" -w /src debian:12 bash packaging/build_deb.sh
 
 ```
 rtsp_tool/
-├── config.py             Modèle de données + fichier config.yaml géré par l'appli
-├── probe.py              Classification des échecs RTSP (auth / timeout / réseau)
-├── snapshot.py           Snapshots JPEG (ISAPI/CGI) + découverte des canaux Hikvision
-├── player.py             Chargement libmpv, réglages RTSP basse latence, upscaling
+├── config.py             Data model + config.yaml file managed by the app
+├── probe.py              RTSP failure classification (auth / timeout / network)
+├── snapshot.py           JPEG snapshots (ISAPI/CGI) + Hikvision channel discovery
+├── player.py             libmpv loading, low-latency RTSP settings, upscaling
 └── ui/
-    ├── main_window.py    Grille/mono, rotation, boucles, plein écran multi-écrans
-    ├── tile.py           Tuile vidéo : états, backoff, arrêt sur 401, débit, capture
-    ├── photo_tile.py     Tuile « mode photo » (profil éco extrême)
-    ├── config_dialogs.py Sites, caméras, ajout d'un DVR entier
-    ├── sequence_editor.py Éditeur de boucles
-    └── icons.py          Icônes SVG
-packaging/                Build .deb, génération d'icône, guide de déploiement
+    ├── main_window.py    Grid/single, rotation, loops, multi-monitor full screen
+    ├── tile.py           Video tile: state, backoff, stop on 401, bitrate, snapshot
+    ├── photo_tile.py     "Photo mode" tile (extreme-eco profile)
+    ├── config_dialogs.py Sites, cameras, whole-DVR import
+    ├── sequence_editor.py Loop editor
+    └── icons.py          SVG icons
+packaging/                .deb build, icon generation, deployment guide
 ```
 
-**Principes de conception**
+**Design principles**
 
-- Une **instance libmpv par tuile**, sur un thread indépendant : un flux qui tombe
-  n'affecte jamais les autres.
-- **Échec d'authentification = arrêt définitif des tentatives.** Les rotations et boucles
-  ré-ouvrant des flux en permanence, un mauvais mot de passe re-tenté verrouillerait le
-  compte côté DVR — l'outil s'arrête et le signale au lieu d'insister.
-- **Reconnexion à backoff exponentiel** (5 s → 10 min) pour les liens 4G instables.
+- One **libmpv instance per tile**, on an independent thread: a failing stream never
+  affects the others.
+- **Authentication failure = permanent stop of retries.** Since rotation and loops keep
+  re-opening streams, a wrong password retried in a loop would lock the DVR account — the
+  tool stops and reports it instead of hammering.
+- **Exponential-backoff reconnection** (5 s → 10 min) for unstable 4G links.
 
-## Pile technique
+## Tech stack
 
 [Python 3.11+](https://www.python.org/) · [PySide6](https://doc.qt.io/qtforpython/) (Qt 6)
 · [python-mpv](https://github.com/jaseg/python-mpv) (libmpv) · [PyYAML](https://pyyaml.org/)
 · [requests](https://requests.readthedocs.io/).
 
-## Feuille de route
+## Roadmap
 
-- [x] Grille / mono, profils bande passante, reconnexion robuste
-- [x] Mode photo (4G), rotation automatique, éditeur de boucles
-- [x] Découverte ISAPI, débit par tuile, multi-écrans, thème sombre
-- [x] Packaging exe signé + `.deb` avec icône
-- [ ] Découverte ONVIF (marques hors Hikvision/Dahua)
-- [ ] Réglage du substream directement depuis l'outil (résolution / IPS / débit)
+- [x] Grid / single views, bandwidth profiles, resilient reconnection
+- [x] Photo mode (4G), automatic rotation, loop editor
+- [x] ISAPI discovery, per-tile bitrate, multi-monitor, dark theme
+- [x] Signed exe + `.deb` packaging with icon
+- [ ] ONVIF discovery (brands beyond Hikvision/Dahua)
+- [ ] Substream tuning directly from the tool (resolution / FPS / bitrate)
 
-## Licence
+## License
 
-Distribué sous licence **MIT** — voir [LICENSE](LICENSE).
+Released under the **MIT** license — see [LICENSE](LICENSE).
