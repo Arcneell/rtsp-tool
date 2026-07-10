@@ -93,8 +93,8 @@ class VideoTile(QFrame):
 
     # signaux internes — émis depuis le thread mpv / threads de probe,
     # délivrés sur le thread Qt (queued)
-    _evt_playing = Signal()
-    _evt_ended = Signal(str)
+    _evt_playing = Signal(int)              # génération
+    _evt_ended = Signal(int, str)           # génération, reason
     _probe_done = Signal(int, str, str)     # génération, kind, detail
 
     def __init__(self, camera: Camera, vue: str, parent=None):
@@ -111,6 +111,12 @@ class VideoTile(QFrame):
         self._probing = False
         self._gen = 0                       # génération : invalide les résultats async périmés
         self._zoom = 0.0                    # zoom numérique (video-zoom mpv, log2)
+        self._ptz_cam = None
+        self._ptz_queue = None              # file FIFO : Stop suit toujours Move
+        self._ptz_thread = None
+        self._ptz_moving = False
+        self._enhance = camera.amelioration  # niveau d'amélioration d'image
+        self._aspect_mode = "fit"            # fit | crop | stretch
         self._log_tail = deque(maxlen=80)   # dernières lignes mpv pour diagnostic
 
         self._build_ui()
@@ -239,12 +245,47 @@ class VideoTile(QFrame):
         event.accept()
 
     def contextMenuEvent(self, event):
+        from ..enhance import NIVEAU_LABELS
         from .icons import icon
         menu = QMenu(self)
-        act = menu.addAction(icon("camera"), "Enregistrer une image")
-        act.setEnabled(self.state == TileState.PLAYING)
-        if menu.exec(event.globalPos()) is act:
+        act_snap = menu.addAction(icon("camera"), "Enregistrer une image")
+        act_snap.setEnabled(self.state == TileState.PLAYING)
+
+        sous = menu.addMenu("Amélioration d'image")
+        for niveau, libelle in NIVEAU_LABELS.items():
+            a = sous.addAction(libelle)
+            a.setCheckable(True)
+            a.setChecked(self._enhance == niveau)
+            a.triggered.connect(lambda _=False, n=niveau: self.set_enhance(n))
+
+        remplir = menu.addMenu("Cadrage")
+        for mode, libelle in (("fit", "Ajusté (défaut)"),
+                              ("crop", "Remplir en recadrant"),
+                              ("stretch", "Étirer")):
+            a = remplir.addAction(libelle)
+            a.setCheckable(True)
+            a.setChecked(self._aspect_mode == mode)
+            a.triggered.connect(lambda _=False, m=mode: self.set_aspect_mode(m))
+
+        if menu.exec(event.globalPos()) is act_snap:
             self._save_snapshot()
+
+    def set_aspect_mode(self, mode: str):
+        self._aspect_mode = mode
+        if self._player is None:
+            return
+        try:
+            if mode == "stretch":
+                self._player["keepaspect"] = False
+                self._player["panscan"] = 0.0
+            elif mode == "crop":
+                self._player["keepaspect"] = True
+                self._player["panscan"] = 1.0
+            else:
+                self._player["keepaspect"] = True
+                self._player["panscan"] = 0.0
+        except Exception:
+            pass
 
     def _save_snapshot(self):
         if self._player is None or self.state != TileState.PLAYING:
@@ -255,6 +296,18 @@ class VideoTile(QFrame):
             self.snapshot_saved.emit(path)
         except Exception as e:
             logger.warning(f"[{self.camera.id}] capture impossible : {e}")
+
+    # ----------------------------------------------------- amélioration image
+
+    def set_enhance(self, niveau: str):
+        """Change le niveau d'amélioration à chaud (off/leger/sr)."""
+        self._enhance = niveau
+        if self.state == TileState.PLAYING:
+            self._apply_enhance()
+
+    def _apply_enhance(self):
+        from ..enhance import apply
+        apply(self._player, self._enhance, self.vue)
 
     # ------------------------------------------------------ zoom numérique
 
@@ -280,36 +333,63 @@ class VideoTile(QFrame):
             pass
 
     # -------------------------------------------------------------- PTZ
+    #
+    # Toutes les commandes PTZ passent par UN seul thread (file FIFO) : ainsi le
+    # Stop est toujours exécuté après le Move correspondant — jamais l'inverse
+    # (sinon la caméra pourrait tourner sans fin). Filet supplémentaire : le
+    # ContinuousMove porte un Timeout côté caméra (voir onvif.ptz_move).
 
-    def _ptz_client(self):
-        if getattr(self, "_ptz_cam", None) is None:
-            from ..onvif import OnvifCamera
-            cam = self.camera
-            self._ptz_cam = OnvifCamera(cam.hote, cam.user, cam.password,
-                                        port=cam.port_http)
-        return self._ptz_cam
+    def _ptz_ensure_worker(self):
+        if self._ptz_queue is not None:
+            return
+        import queue
+        from ..onvif import OnvifCamera
+        cam = self.camera
+        self._ptz_cam = OnvifCamera(cam.hote, cam.user, cam.password, port=cam.port_http)
+        q = queue.Queue()
+        self._ptz_queue = q
+
+        def worker():
+            tok = cam.onvif_profile
+            while True:
+                job = q.get()               # file capturée localement (pas self._…)
+                if job is None:
+                    return
+                kind, args = job
+                try:
+                    if kind == "move":
+                        self._ptz_cam.ptz_move(tok, *args)
+                    else:
+                        self._ptz_cam.ptz_stop(tok)
+                except Exception as e:
+                    logger.warning(f"[{cam.id}] PTZ {kind}: {e}")
+
+        self._ptz_thread = threading.Thread(target=worker, daemon=True,
+                                            name=f"ptz-{cam.id}")
+        self._ptz_thread.start()
 
     def _ptz(self, pan: float, tilt: float, zoom: float):
         if not self.camera.ptz:
             return
-        tok = self.camera.onvif_profile
-        def work():
-            try:
-                self._ptz_client().ptz_move(tok, pan, tilt, zoom)
-            except Exception as e:
-                logger.warning(f"[{self.camera.id}] PTZ move: {e}")
-        threading.Thread(target=work, daemon=True, name=f"ptz-{self.camera.id}").start()
+        self._ptz_ensure_worker()
+        self._ptz_moving = True
+        self._ptz_queue.put(("move", (pan, tilt, zoom)))
 
     def _ptz_stop(self):
-        if not self.camera.ptz:
+        if not self.camera.ptz or self._ptz_queue is None or not self._ptz_moving:
             return
-        tok = self.camera.onvif_profile
-        def work():
-            try:
-                self._ptz_client().ptz_stop(tok)
-            except Exception as e:
-                logger.warning(f"[{self.camera.id}] PTZ stop: {e}")
-        threading.Thread(target=work, daemon=True, name=f"ptz-stop-{self.camera.id}").start()
+        self._ptz_moving = False
+        self._ptz_queue.put(("stop", ()))
+
+    def _ptz_shutdown(self):
+        q = self._ptz_queue
+        if q is None:
+            return
+        if self._ptz_moving:                 # tuile détruite bouton enfoncé → stop
+            q.put(("stop", ()))
+            self._ptz_moving = False
+        q.put(None)                          # termine le worker (file capturée localement)
+        self._ptz_queue = None
 
     def _update_debit(self):
         """Affiche le débit réseau réellement consommé par la tuile."""
@@ -362,7 +442,8 @@ class VideoTile(QFrame):
             self._set_state(TileState.IDLE, message)
 
     def shutdown(self):
-        """Destruction de la tuile : libère l'instance mpv."""
+        """Destruction de la tuile : libère mpv et arrête le PTZ."""
+        self._ptz_shutdown()            # stoppe un mouvement en cours + le worker
         self.stop()
         if self._player is not None:
             try:
@@ -391,7 +472,7 @@ class VideoTile(QFrame):
         @self._player.event_callback("file-loaded")
         def _loaded(_evt):
             try:
-                self._evt_playing.emit()
+                self._evt_playing.emit(self._gen)
             except RuntimeError:
                 pass
 
@@ -403,7 +484,7 @@ class VideoTile(QFrame):
             except Exception:
                 pass
             try:
-                self._evt_ended.emit(reason)
+                self._evt_ended.emit(self._gen, reason)
             except RuntimeError:
                 pass
 
@@ -432,8 +513,9 @@ class VideoTile(QFrame):
         if level in ("error", "warn", "fatal"):
             self._log_tail.append(f"{component}: {message}")
 
-    def _on_playing(self):
-        if self._stopping:
+    def _on_playing(self, gen: int):
+        # événement d'une connexion précédente (retry/reconnexion entre-temps) → ignorer
+        if gen != self._gen or self._stopping:
             return
         self._connect_timer.stop()
         if self._failures > 0:
@@ -441,10 +523,17 @@ class VideoTile(QFrame):
         self._failures = 0
         self._set_state(TileState.PLAYING)
         self._debit_timer.start()
+        self._apply_enhance()
+        if self._zoom:
+            self._set_zoom(self._zoom)
+        if self._aspect_mode != "fit":
+            self.set_aspect_mode(self._aspect_mode)
         if self.camera.reconnexion_preventive_s > 0:
             self._preventive_timer.start(self.camera.reconnexion_preventive_s * 1000)
 
-    def _on_ended(self, reason: str):
+    def _on_ended(self, gen: int, reason: str):
+        if gen != self._gen:
+            return          # end-file d'une connexion périmée (remplacement de flux)
         if self._stopping or self.state in (TileState.AUTH_FAILED, TileState.IDLE):
             return
         if "stop" in reason.lower():
@@ -493,6 +582,7 @@ class VideoTile(QFrame):
                     pass
             threading.Thread(target=work, daemon=True, name=f"probe-{self.camera.id}").start()
             self._set_state(TileState.CONNECTING, "Diagnostic…")
+            self._connect_timer.start()     # filet : ne pas rester bloqué en diagnostic
             return
 
         self._schedule_retry(kind_hint or kind)

@@ -24,9 +24,10 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox,
                                QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
-from ..config import (LIENS, MARQUE_LABELS, MARQUES, MARQUES_URL_LIBRE,
-                      PROFIL_LABELS, PROFILS, AppConfig, Camera, Site,
-                      purger_cameras_sequences)
+from ..config import (ENHANCE_NIVEAUX, LIENS, MARQUE_LABELS, MARQUES,
+                      MARQUES_URL_LIBRE, PROFIL_LABELS, PROFILS, AppConfig,
+                      Camera, Site, purger_cameras_sequences)
+from ..enhance import NIVEAU_LABELS as ENHANCE_LABELS
 from ..snapshot import lister_canaux_hikvision
 from .icons import icon
 
@@ -126,6 +127,12 @@ class CameraDialog(QDialog):
         self._profil.setCurrentIndex(_PROFILS_ORDONNES.index(
             camera.profil if camera else _profil_defaut(cible)))
 
+        self._amelioration = QComboBox()
+        for n in ENHANCE_NIVEAUX:
+            self._amelioration.addItem(ENHANCE_LABELS[n], n)
+        self._amelioration.setCurrentIndex(
+            ENHANCE_NIVEAUX.index(camera.amelioration if camera else "leger"))
+
         self._marque = QComboBox()
         for m in MARQUES:
             self._marque.addItem(MARQUE_LABELS[m], m)
@@ -183,6 +190,7 @@ class CameraDialog(QDialog):
         form.addRow("Site :", self._site)
         form.addRow("Marque :", self._marque)
         form.addRow("Profil bande passante :", self._profil)
+        form.addRow("Amélioration d'image :", self._amelioration)
         form.addRow("Utilisateur DVR :", self._user)
         form.addRow("Mot de passe :", pwd_row)
         form.addRow(self._lbl_photo, self._photo_int)
@@ -261,9 +269,12 @@ class CameraDialog(QDialog):
 
         def work():
             ok = _port_ouvert(host, port)
-            self._test_done.emit(
-                f"✓ {host}:{port} joignable (port RTSP ouvert)" if ok
-                else f"✗ {host}:{port} injoignable (IP/port/pare-feu ?)")
+            try:
+                self._test_done.emit(
+                    f"✓ {host}:{port} joignable (port RTSP ouvert)" if ok
+                    else f"✗ {host}:{port} injoignable (IP/port/pare-feu ?)")
+            except RuntimeError:
+                pass
         threading.Thread(target=work, daemon=True).start()
 
     def _on_test_done(self, msg: str):
@@ -283,9 +294,14 @@ class CameraDialog(QDialog):
             from ..onvif import OnvifCamera
             try:
                 res = OnvifCamera(args[0], args[1], args[2], port=args[3]).profils()
-                self._onvif_done.emit(res, "")
             except Exception as e:
-                self._onvif_done.emit(None, str(e))
+                res, err = None, str(e)
+            else:
+                err = ""
+            try:
+                self._onvif_done.emit(res, err)
+            except RuntimeError:
+                pass
         threading.Thread(target=work, daemon=True).start()
 
     def _on_onvif_done(self, res, erreur: str):
@@ -348,6 +364,7 @@ class CameraDialog(QDialog):
         cam.url_substream = self._url_sub.text().strip()
         cam.url_snapshot = self._url_snap.text().strip()
         cam.photo_intervalle_s = self._photo_int.value()
+        cam.amelioration = self._amelioration.currentData()
         cam.ptz = self._onvif_ptz if cam.marque == "onvif" else False
         cam.onvif_profile = self._onvif_profile if cam.marque == "onvif" else ""
         return cam
@@ -456,7 +473,10 @@ class DvrDialog(QDialog):
 
         def work():
             canaux, err = lister_canaux_hikvision(*args)
-            self._canaux_prets.emit(canaux, err)
+            try:
+                self._canaux_prets.emit(canaux, err)
+            except RuntimeError:
+                pass
 
         threading.Thread(target=work, daemon=True, name="scan-dvr").start()
 
@@ -541,6 +561,8 @@ class OnvifScanDialog(QDialog):
         self._cfg = cfg
         self.cameras_creees: list[Camera] = []
         self._devices = []
+        self._annule = False            # évite d'injecter des caméras après annulation
+        self._resolution = False        # évite le double-import
         self.setWindowTitle("Scan réseau ONVIF")
         self.setMinimumSize(560, 520)
 
@@ -584,9 +606,14 @@ class OnvifScanDialog(QDialog):
         lay.addWidget(self._table, 1)
         lay.addWidget(boutons)
 
+        self._boutons = boutons
         self._devices_prets.connect(self._afficher_devices)
         self._import_fini.connect(self._on_import_fini)
         QTimer.singleShot(150, self._scanner)   # scan auto à l'ouverture
+
+    def reject(self):
+        self._annule = True                     # un import en vol ne sera pas appliqué
+        super().reject()
 
     def _scanner(self):
         self._btn_scan.setEnabled(False)
@@ -598,10 +625,15 @@ class OnvifScanDialog(QDialog):
                 devs = discover(timeout=4.0)
             except Exception:
                 devs = []
-            self._devices_prets.emit(devs)
+            try:
+                self._devices_prets.emit(devs)
+            except RuntimeError:
+                pass
         threading.Thread(target=work, daemon=True, name="onvif-discover").start()
 
     def _afficher_devices(self, devices: list):
+        if self._annule:
+            return
         self._btn_scan.setEnabled(True)
         self._devices = devices
         self._table.setRowCount(0)
@@ -625,6 +657,8 @@ class OnvifScanDialog(QDialog):
             self._table.setItem(r, 2, hote)
 
     def _valider(self):
+        if self._resolution:                 # évite le double-import (double-clic)
+            return
         if self._site.currentData() is None:
             QMessageBox.warning(self, "ONVIF", "Créez d'abord un site.")
             return
@@ -633,7 +667,9 @@ class OnvifScanDialog(QDialog):
         if not choisis:
             QMessageBox.warning(self, "ONVIF", "Aucune caméra cochée.")
             return
+        self._resolution = True
         self._btn_scan.setEnabled(False)
+        self._boutons.button(QDialogButtonBox.Ok).setEnabled(False)
         self._statut.setText(f"Résolution des flux de {len(choisis)} caméra(s)…")
         site = self._cfg.site(self._site.currentData())
         user, pwd = self._user.text(), self._pwd.text()
@@ -666,11 +702,18 @@ class OnvifScanDialog(QDialog):
                     url_snapshot=res.snapshot,
                     ptz=main.ptz, onvif_profile=main.token,
                 ))
-            self._import_fini.emit(crees, echecs)
+            try:
+                self._import_fini.emit(crees, echecs)
+            except RuntimeError:
+                pass
         threading.Thread(target=work, daemon=True, name="onvif-resolve").start()
 
     def _on_import_fini(self, crees: list, echecs: list):
+        self._resolution = False
+        if self._annule:                 # annulé pendant la résolution → ne rien ajouter
+            return
         self._btn_scan.setEnabled(True)
+        self._boutons.button(QDialogButtonBox.Ok).setEnabled(True)
         self._cfg.cameras.extend(crees)
         self.cameras_creees = crees
         if crees and not echecs:

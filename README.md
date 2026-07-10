@@ -18,12 +18,15 @@ any ONVIF device through auto-discovery.
 - Sequences ("loops"): ordered steps (grid or single view + cameras + duration) played
   on repeat, with a built-in editor.
 - Per-camera bandwidth profiles (see below).
+- **Neural image enhancement** (see below): real-time GPU super-resolution to make
+  low-quality substreams legible.
 - **Wide device support**: Hikvision, Dahua, Amcrest, Reolink, Uniview, Axis, Vivotek,
   Foscam, TP-Link/Tapo via built-in URL templates, plus **ONVIF** for anything else.
 - **ONVIF network discovery**: scan the LAN, pick the cameras, and their stream URLs
   (main + sub), snapshot URL and PTZ capability are resolved automatically.
 - **PTZ control** for motorised ONVIF cameras (pan/tilt/zoom pad in single view).
-- **Digital zoom** on any tile, and a **"test connection"** button when adding a camera.
+- **Digital zoom** and per-tile aspect mode (fit / crop / stretch); a **"test
+  connection"** button when adding a camera.
 - Whole-DVR import: channels and their names are discovered over the Hikvision ISAPI, or
   listed manually for other brands.
 - Reconnection with exponential backoff; retries stop on authentication failure to avoid
@@ -46,6 +49,30 @@ and an off-screen camera holds no connection.
 Rotation and sequences close the current streams before opening the next ones. RTSP runs
 over TCP. Substreams are upscaled with mpv's `ewa_lanczossharp` scaler so they stay
 readable when enlarged.
+
+## Image enhancement
+
+Low-bitrate CCTV substreams (CIF/360p, blocky, blurry) can be cleaned up in real time
+by the GPU, per camera or globally, with three levels:
+
+| Level | What it does | Cost |
+|-------|--------------|------|
+| Off | Direct rendering (ewa_lanczossharp upscaler) | none |
+| Light | Deblocking (deband) + adaptive sharpening | very low |
+| Super-resolution | **Neural network run as a GPU shader** that reconstructs edges and detail | GPU |
+
+Super-resolution uses **Anime4K** (bundled, MIT) — the restore CNN removes compression
+artifacts and the upscale CNN reconstructs detail. In single view, if the optional
+**FSRCNNX** engine (better for photographic/CCTV content) has been downloaded via the
+toolbar, it is used instead. Grid tiles use lighter shader variants so many cameras can
+run at once.
+
+Honest limits: super-resolution reconstructs a *plausible* sharper image from what the
+blur/blocks obscure — it does not invent information that was never captured (a plate 4
+pixels wide stays unreadable). On typical CCTV substreams the legibility gain is large.
+
+FSRCNNX is GPL-licensed and therefore **not** bundled; it is downloaded on demand into
+the user profile and never redistributed by this repository.
 
 ## Install
 
@@ -90,9 +117,11 @@ rtsp_tool/
 ├── probe.py              RTSP failure classification (auth / timeout / network)
 ├── snapshot.py           JPEG snapshots (ISAPI/CGI) and Hikvision channel discovery
 ├── onvif.py              ONVIF: WS-Discovery, stream/snapshot URIs, PTZ (no heavy deps)
+├── enhance.py            Image enhancement engine (deband/sharpen + neural GLSL SR)
 ├── player.py             libmpv loading, RTSP settings, upscaling
+├── shaders/              Bundled Anime4K neural shaders (MIT) + attribution
 └── ui/
-    ├── main_window.py    Grid/single views, rotation, loops, full screen
+    ├── main_window.py    Grid/single views, rotation, loops, enhancement, full screen
     ├── tile.py           Video tile: state machine, backoff, stop on 401, zoom, PTZ
     ├── photo_tile.py     Photo-mode tile (extreme-eco profile)
     ├── config_dialogs.py Sites, cameras, whole-DVR import, ONVIF network scan

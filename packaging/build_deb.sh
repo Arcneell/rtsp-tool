@@ -23,6 +23,7 @@ fi
 python3 -m venv /tmp/venv
 /tmp/venv/bin/pip install --quiet -r requirements.txt pyinstaller
 /tmp/venv/bin/pyinstaller --noconfirm --windowed --name rtsp-tool \
+    --add-data "rtsp_tool/shaders:rtsp_tool/shaders" \
     --distpath /tmp/dist --workpath /tmp/build run.py
 
 # --- arborescence du paquet ---

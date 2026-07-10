@@ -98,12 +98,19 @@ def discover(timeout: float = 4.0) -> list[OnvifDevice]:
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
     sock.settimeout(0.6)
     try:
-        # émettre plusieurs fois (l'UDP multicast se perd facilement)
-        for _ in range(2):
+        # émettre depuis chaque interface locale (hôtes multi-NIC : Wi-Fi+Ethernet,
+        # VPN…) — sinon la sonde ne part que par la route par défaut
+        for src in _local_ips():
             try:
-                sock.sendto(probe, (WSD_ADDR, WSD_PORT))
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF,
+                                socket.inet_aton(src))
             except OSError:
                 pass
+            for _ in range(2):          # l'UDP multicast se perd facilement
+                try:
+                    sock.sendto(probe, (WSD_ADDR, WSD_PORT))
+                except OSError:
+                    pass
 
         fin = _monotonic() + timeout
         while _monotonic() < fin:
@@ -286,8 +293,11 @@ class OnvifCamera:
             res_el = _find(prof, "Resolution")
             if res_el is not None:
                 w, h = _find(res_el, "Width"), _find(res_el, "Height")
-                p.largeur = int(w.text) if w is not None and w.text else 0
-                p.hauteur = int(h.text) if h is not None and h.text else 0
+                try:
+                    p.largeur = int(w.text) if w is not None and w.text else 0
+                    p.hauteur = int(h.text) if h is not None and h.text else 0
+                except (ValueError, TypeError):
+                    p.largeur = p.hauteur = 0
             p.ptz = _find(prof, "PTZConfiguration") is not None
             res.profils.append(p)
 
@@ -332,14 +342,17 @@ class OnvifCamera:
         uri = _find(root, "Uri")
         return (uri.text or "").strip() if uri is not None else ""
 
-    def ptz_move(self, token: str, pan: float, tilt: float, zoom: float = 0.0):
+    def ptz_move(self, token: str, pan: float, tilt: float, zoom: float = 0.0,
+                 timeout_ptz: str = "PT3S"):
+        # Timeout : filet de sécurité — la caméra s'arrête d'elle-même au bout de
+        # ce délai si le Stop se perd (sinon risque de mouvement sans fin).
         self._resolve_services()
         body = (
             f'<ContinuousMove xmlns="{_NS_PTZ}">'
             f'<ProfileToken>{_esc(token)}</ProfileToken><Velocity>'
             f'<PanTilt x="{pan:.2f}" y="{tilt:.2f}" xmlns="{_NS_SCHEMA}"/>'
             f'<Zoom x="{zoom:.2f}" xmlns="{_NS_SCHEMA}"/>'
-            f'</Velocity></ContinuousMove>'
+            f'</Velocity><Timeout>{timeout_ptz}</Timeout></ContinuousMove>'
         )
         self._call(self._ptz_url, body)
 
@@ -376,3 +389,17 @@ def _uuid4() -> str:
 def _monotonic() -> float:
     import time
     return time.monotonic()
+
+
+def _local_ips() -> list:
+    """Adresses IPv4 locales (une par interface), pour émettre la sonde partout."""
+    ips = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if not ip.startswith("127."):
+                ips.add(ip)
+    except OSError:
+        pass
+    ips.add("0.0.0.0")          # interface par défaut, toujours tentée
+    return list(ips)

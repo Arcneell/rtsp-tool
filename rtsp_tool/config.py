@@ -90,6 +90,7 @@ MARQUE_LABELS = {
 MARQUES = tuple(MARQUE_LABELS)               # toutes les marques connues
 MARQUES_URL_LIBRE = ("onvif", "custom")      # pas de gabarit : URLs stockées
 LIENS = ("fibre", "4g")
+ENHANCE_NIVEAUX = ("off", "leger", "sr")     # amélioration d'image (cf. enhance.py)
 
 
 def default_config_path() -> str:
@@ -145,6 +146,7 @@ class Camera:
     reconnexion_preventive_s: int = 0   # 0 = désactivé
     ptz: bool = False             # caméra motorisée (ONVIF)
     onvif_profile: str = ""       # token du profil ONVIF principal (PTZ)
+    amelioration: str = "leger"   # off | leger | sr (super-résolution)
 
     def _auth(self) -> str:
         if not self.user:
@@ -198,7 +200,8 @@ class Camera:
             d.update(hote=self.hote, port=self.port, canal=self.canal,
                      port_http=self.port_http)
         d.update(user=self.user, password=obfusquer(self.password),
-                 photo_intervalle_s=self.photo_intervalle_s)
+                 photo_intervalle_s=self.photo_intervalle_s,
+                 amelioration=self.amelioration)
         if self.reconnexion_preventive_s:
             d["reconnexion_preventive_s"] = self.reconnexion_preventive_s
         if self.ptz:
@@ -331,6 +334,9 @@ def load_config(path: str) -> AppConfig:
                 reconnexion_preventive_s=max(0, int(c.get("reconnexion_preventive_s", 0))),
                 ptz=bool(c.get("ptz", False)),
                 onvif_profile=str(c.get("onvif_profile", "")),
+                amelioration=(str(c.get("amelioration", "leger")).lower()
+                              if str(c.get("amelioration", "leger")).lower() in ENHANCE_NIVEAUX
+                              else "leger"),
             ))
             ids_vus.add(cam_id)
         except (KeyError, ValueError, TypeError) as e:

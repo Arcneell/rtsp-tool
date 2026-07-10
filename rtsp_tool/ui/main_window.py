@@ -11,7 +11,7 @@ Règles bande passante appliquées ici :
 import logging
 import math
 
-from PySide6.QtCore import QSettings, Qt, QTimer
+from PySide6.QtCore import QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (QComboBox, QDockWidget, QGridLayout, QLabel,
                                QMainWindow, QMenu, QMessageBox, QSpinBox,
@@ -35,6 +35,8 @@ CAP_CHOICES = [("Auto (16 max)", 16), ("1×1", 1), ("2×2", 4), ("3×3", 9), ("4
 
 
 class MainWindow(QMainWindow):
+    _fsrcnnx_fini = Signal(bool, str)
+
     def __init__(self, config_path: str):
         super().__init__()
         self._cfg = AppConfig(path=config_path)
@@ -45,6 +47,7 @@ class MainWindow(QMainWindow):
         self._page = 0
         self._seq = None                            # séquence en cours de lecture
         self._seq_idx = -1
+        self._enhance_override = "auto"             # amélioration : override global live
         self._settings = QSettings("RTSP-TOOL", "viewer")
 
         self.setWindowTitle(f"{APP_NAME} v{__version__}")
@@ -105,6 +108,26 @@ class MainWindow(QMainWindow):
         act_seq_edit = QAction(icon("pencil"), "Boucles…", self)
         act_seq_edit.triggered.connect(self._editer_sequences)
         tb.addAction(act_seq_edit)
+        tb.addSeparator()
+
+        # --- amélioration d'image (override live pour toutes les tuiles) ---
+        tb.addWidget(QLabel(" Image : "))
+        self._enh_combo = QComboBox()
+        self._enh_combo.addItem("Selon caméra", "auto")
+        self._enh_combo.addItem("Aucune", "off")
+        self._enh_combo.addItem("Légère", "leger")
+        self._enh_combo.addItem("Super-résolution", "sr")
+        self._enh_combo.setToolTip(
+            "Amélioration d'image appliquée en direct à toutes les tuiles.\n"
+            "« Super-résolution » = réseau de neurones GPU (Anime4K / FSRCNNX).")
+        self._enh_combo.currentIndexChanged.connect(self._enhance_change)
+        tb.addWidget(self._enh_combo)
+        act_dl = QAction(icon("plus"), "Moteur CCTV…", self)
+        act_dl.setToolTip("Télécharger le moteur de super-résolution FSRCNNX "
+                          "(optimisé vidéosurveillance)")
+        act_dl.triggered.connect(self._telecharger_fsrcnnx)
+        tb.addAction(act_dl)
+        self._fsrcnnx_fini.connect(self._on_fsrcnnx_fini)
         tb.addSeparator()
 
         self._act_pause = QAction(icon("pause"), "Tout arrêter", self)
@@ -343,11 +366,62 @@ class MainWindow(QMainWindow):
             tile = PhotoTile(cam, vue)
         else:
             tile = VideoTile(cam, vue)
+            tile.set_enhance(self._enhance_niveau(cam))
         tile.double_clicked.connect(self._tuile_double_clic)
         tile.state_changed.connect(self._update_status)
         tile.snapshot_saved.connect(
             lambda p: self.statusBar().showMessage(f"Image enregistrée : {p}", 6000))
         return tile
+
+    def _enhance_niveau(self, cam) -> str:
+        """Niveau d'amélioration effectif : override global sinon réglage caméra."""
+        return cam.amelioration if self._enhance_override == "auto" else self._enhance_override
+
+    def _enhance_change(self):
+        self._enhance_override = self._enh_combo.currentData()
+        for tile in self._all_video_tiles():
+            tile.set_enhance(self._enhance_niveau(tile.camera))
+        if self._enhance_override == "sr":
+            from ..enhance import sr_disponible
+            if not sr_disponible():
+                self.statusBar().showMessage(
+                    "Super-résolution : shaders introuvables — réinstallez l'application.", 6000)
+
+    def _all_video_tiles(self):
+        cibles = ([self._mono_tile] if self._mono_tile is not None
+                  else list(self._tiles.values()))
+        return [t for t in cibles if isinstance(t, VideoTile)]
+
+    def _telecharger_fsrcnnx(self):
+        from ..enhance import fsrcnnx_present
+        if fsrcnnx_present():
+            QMessageBox.information(self, "Moteur CCTV",
+                                    "Le moteur FSRCNNX est déjà installé.")
+            return
+        if QMessageBox.question(
+                self, "Moteur CCTV (FSRCNNX)",
+                "Télécharger le moteur de super-résolution FSRCNNX (~70 Ko, licence GPL) ?\n\n"
+                "Il est optimisé pour la vidéosurveillance et sera utilisé en vue mono "
+                "à la place d'Anime4K.") != QMessageBox.Yes:
+            return
+        self.statusBar().showMessage("Téléchargement de FSRCNNX…")
+        import threading
+        def work():
+            from ..enhance import download_fsrcnnx
+            ok, msg = download_fsrcnnx()
+            self._fsrcnnx_fini.emit(ok, msg)
+        threading.Thread(target=work, daemon=True, name="dl-fsrcnnx").start()
+
+    def _on_fsrcnnx_fini(self, ok: bool, msg: str):
+        if ok:
+            self.statusBar().showMessage("Moteur FSRCNNX installé.", 6000)
+            for tile in self._all_video_tiles():
+                tile.set_enhance(self._enhance_niveau(tile.camera))
+        else:
+            QMessageBox.warning(self, "Moteur CCTV",
+                                f"Téléchargement impossible : {msg}\n\n"
+                                "Vous pouvez le placer manuellement dans le dossier "
+                                "shaders du profil utilisateur.")
 
     def _vider_grille(self):
         for tile in self._tiles.values():

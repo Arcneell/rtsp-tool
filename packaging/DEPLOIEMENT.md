@@ -9,7 +9,8 @@ python packaging/make_icon.py     # génère l'icône (une fois)
 pyinstaller --noconfirm --windowed --name RTSP-Tool --icon packaging/rtsp-tool.ico `
     --add-binary "lib\libmpv-2.dll;." `
     --add-data "rtsp_tool\ui\rtsp-tool.ico;rtsp_tool/ui" `
-    --add-data "rtsp_tool\ui\rtsp-tool.png;rtsp_tool/ui" run.py
+    --add-data "rtsp_tool\ui\rtsp-tool.png;rtsp_tool/ui" `
+    --add-data "rtsp_tool\shaders;rtsp_tool/shaders" run.py
 # -> dist\RTSP-Tool\  (déployer le dossier entier, pas seulement l'exe)
 ```
 
