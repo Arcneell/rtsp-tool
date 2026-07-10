@@ -16,9 +16,9 @@ import subprocess
 PROBE_TIMEOUT = 8
 
 _AUTH_MARKERS = ("401", "unauthorized", "authentication", "auth failed")
-_TIMEOUT_MARKERS = ("timed out", "timeout", "connection to tcp")
 _NETWORK_MARKERS = ("refused", "no route", "unreachable", "network is down",
-                    "failed to resolve", "name or service not known")
+                    "failed to resolve", "name or service not known", "host is down")
+_TIMEOUT_MARKERS = ("timed out", "timeout")
 
 
 def classify_text(text: str) -> str:
@@ -26,10 +26,12 @@ def classify_text(text: str) -> str:
     s = (text or "").lower()
     if any(m in s for m in _AUTH_MARKERS):
         return "auth"
-    if any(m in s for m in _TIMEOUT_MARKERS):
-        return "timeout"
+    # réseau avant timeout : « Connection to tcp://… failed: Connection refused »
+    # contient les deux, mais c'est bien un refus, pas un délai dépassé
     if any(m in s for m in _NETWORK_MARKERS):
         return "network"
+    if any(m in s for m in _TIMEOUT_MARKERS):
+        return "timeout"
     return "other"
 
 

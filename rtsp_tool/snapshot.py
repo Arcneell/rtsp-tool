@@ -69,6 +69,9 @@ def lister_canaux_hikvision(hote: str, port_http: int, user: str, password: str,
     def _local(tag):
         return tag.rsplit("}", 1)[-1]
 
+    def _int(el):
+        return int(el.text) if el is not None and el.text and el.text.strip() else None
+
     try:
         # DVR analogiques / turbo HD
         root = _xml(f"{base}/ISAPI/System/Video/inputs/channels")
@@ -79,7 +82,7 @@ def lister_canaux_hikvision(hote: str, port_http: int, user: str, password: str,
                 cid = nom = None
                 for sub in ch:
                     if _local(sub.tag) == "id":
-                        cid = int(sub.text)
+                        cid = _int(sub)
                     elif _local(sub.tag) == "name":
                         nom = (sub.text or "").strip()
                 if cid is not None:
@@ -94,7 +97,7 @@ def lister_canaux_hikvision(hote: str, port_http: int, user: str, password: str,
                 cid = nom = None
                 for sub in ch:
                     if _local(sub.tag) == "id":
-                        cid = int(sub.text)
+                        cid = _int(sub)
                     elif _local(sub.tag) == "name":
                         nom = (sub.text or "").strip()
                 if cid is not None:
@@ -109,8 +112,8 @@ def lister_canaux_hikvision(hote: str, port_http: int, user: str, password: str,
                         continue
                     for sub in ch:
                         if _local(sub.tag) == "id":
-                            sid = int(sub.text)
-                            if sid % 100 == 1:          # mainstream → un canal
+                            sid = _int(sub)
+                            if sid is not None and sid % 100 == 1:   # mainstream → 1 canal
                                 canaux[sid // 100] = f"Canal {sid // 100}"
 
         if not canaux:
@@ -122,5 +125,7 @@ def lister_canaux_hikvision(hote: str, port_http: int, user: str, password: str,
         return [], "délai dépassé — DVR injoignable"
     except requests.exceptions.ConnectionError:
         return [], "connexion impossible (IP/port HTTP à vérifier)"
-    except (ET.ParseError, ValueError) as e:
+    except requests.exceptions.RequestException as e:
+        return [], f"erreur réseau : {type(e).__name__}"
+    except (ET.ParseError, ValueError, TypeError) as e:
         return [], f"réponse ISAPI illisible : {e}"

@@ -57,7 +57,38 @@ PROFIL_LABELS = {
     "eco-extreme": "Éco extrême (4G faible) — photo périodique en grille",
 }
 
-MARQUES = ("hikvision", "dahua", "custom")
+# Gabarits d'URL RTSP par marque : (chemin mainstream, chemin substream).
+# Placeholders : {ch} = canal, {ch2} = canal sur 2 chiffres.
+BRAND_URL = {
+    "hikvision": ("/Streaming/Channels/{ch}01", "/Streaming/Channels/{ch}02"),
+    "dahua":     ("/cam/realmonitor?channel={ch}&subtype=0", "/cam/realmonitor?channel={ch}&subtype=1"),
+    "amcrest":   ("/cam/realmonitor?channel={ch}&subtype=0", "/cam/realmonitor?channel={ch}&subtype=1"),
+    "reolink":   ("/h264Preview_{ch2}_main", "/h264Preview_{ch2}_sub"),
+    "uniview":   ("/unicast/c{ch}/s0/live", "/unicast/c{ch}/s1/live"),
+    "axis":      ("/axis-media/media.amp?camera={ch}",
+                  "/axis-media/media.amp?camera={ch}&resolution=640x360"),
+    "vivotek":   ("/live.sdp", "/live2.sdp"),
+    "foscam":    ("/videoMain", "/videoSub"),
+    "tplink":    ("/stream1", "/stream2"),
+}
+
+# Libellés marque pour l'interface (ordre d'affichage)
+MARQUE_LABELS = {
+    "hikvision": "Hikvision",
+    "dahua": "Dahua",
+    "amcrest": "Amcrest",
+    "reolink": "Reolink",
+    "uniview": "Uniview",
+    "axis": "Axis",
+    "vivotek": "Vivotek",
+    "foscam": "Foscam",
+    "tplink": "TP-Link / Tapo",
+    "onvif": "ONVIF (auto — toutes marques)",
+    "custom": "Autre (URLs RTSP libres)",
+}
+
+MARQUES = tuple(MARQUE_LABELS)               # toutes les marques connues
+MARQUES_URL_LIBRE = ("onvif", "custom")      # pas de gabarit : URLs stockées
 LIENS = ("fibre", "4g")
 
 
@@ -100,18 +131,20 @@ class Camera:
     nom: str
     site: Site
     profil: str = "normal"        # normal | eco | eco-extreme
-    marque: str = "hikvision"     # hikvision | dahua | custom
+    marque: str = "hikvision"     # voir MARQUES
     hote: str = ""
     port: int = 554
     canal: int = 1
     user: str = ""
     password: str = ""
-    url_substream: str = ""       # marque: custom
-    url_mainstream: str = ""      # marque: custom
-    url_snapshot: str = ""        # marque: custom, profil eco-extreme
-    port_http: int = 80           # ISAPI/CGI (mode photo, import DVR)
+    url_substream: str = ""       # marques url-libre (onvif/custom)
+    url_mainstream: str = ""      # marques url-libre (onvif/custom)
+    url_snapshot: str = ""        # url-libre / profil eco-extreme
+    port_http: int = 80           # ISAPI/CGI/ONVIF (mode photo, import, PTZ)
     photo_intervalle_s: int = 10  # rafraîchissement du mode photo
     reconnexion_preventive_s: int = 0   # 0 = désactivé
+    ptz: bool = False             # caméra motorisée (ONVIF)
+    onvif_profile: str = ""       # token du profil ONVIF principal (PTZ)
 
     def _auth(self) -> str:
         if not self.user:
@@ -121,15 +154,17 @@ class Camera:
     def url(self, flux: str) -> str:
         """URL RTSP pour flux ∈ {sub, main}."""
         main = flux == "main"
-        if self.marque == "custom":
+        if self.marque in MARQUES_URL_LIBRE:
             u = self.url_mainstream if main else self.url_substream
-            # si un seul des deux est fourni, il sert pour les deux vues
-            return u or self.url_mainstream or self.url_substream
+            u = u or self.url_mainstream or self.url_substream
+            if self.marque == "onvif":
+                from .onvif import inject_auth       # identifiants pour la lecture
+                return inject_auth(u, self.user, self.password)
+            return u
         base = f"rtsp://{self._auth()}{self.hote}:{self.port}"
-        if self.marque == "dahua":
-            return f"{base}/cam/realmonitor?channel={self.canal}&subtype={0 if main else 1}"
-        # hikvision : canal 1 → 101 (main) / 102 (sub), canal 12 → 1201/1202
-        return f"{base}/Streaming/Channels/{self.canal * 100 + (1 if main else 2)}"
+        tmpl = BRAND_URL.get(self.marque, BRAND_URL["hikvision"])
+        chemin = tmpl[0] if main else tmpl[1]
+        return base + chemin.format(ch=self.canal, ch2=f"{self.canal:02d}")
 
     def url_pour_vue(self, vue: str) -> str:
         """URL selon la vue ∈ {grille, mono}, en appliquant le profil."""
@@ -140,22 +175,25 @@ class Camera:
 
     def snapshot_url(self) -> str:
         """URL HTTP d'une image instantanée (mode photo). Vide si non supporté."""
-        if self.marque == "custom":
+        if self.marque in MARQUES_URL_LIBRE:
             return self.url_snapshot
         base = f"http://{self.hote}:{self.port_http}"
-        if self.marque == "dahua":
+        if self.marque in ("dahua", "amcrest"):
             return f"{base}/cgi-bin/snapshot.cgi?channel={self.canal}"
-        # Hikvision : image du substream (id x02) = résolution réduite, parfaite
-        # pour une tuile de grille et plus légère sur un lien 4G
-        return f"{base}/ISAPI/Streaming/channels/{self.canal * 100 + 2}/picture"
+        if self.marque == "hikvision":
+            # image du substream (id x02) = résolution réduite, légère sur un lien 4G
+            return f"{base}/ISAPI/Streaming/channels/{self.canal * 100 + 2}/picture"
+        return ""     # autres marques : pas de snapshot HTTP standard
 
     def to_dict(self) -> dict:
         d = {"id": self.id, "nom": self.nom, "site": self.site.id,
              "profil": self.profil, "marque": self.marque}
-        if self.marque == "custom":
+        if self.marque in MARQUES_URL_LIBRE:
             d.update(url_substream=self.url_substream,
                      url_mainstream=self.url_mainstream,
                      url_snapshot=self.url_snapshot)
+            if self.marque == "onvif":
+                d.update(hote=self.hote, port_http=self.port_http)
         else:
             d.update(hote=self.hote, port=self.port, canal=self.canal,
                      port_http=self.port_http)
@@ -163,6 +201,9 @@ class Camera:
                  photo_intervalle_s=self.photo_intervalle_s)
         if self.reconnexion_preventive_s:
             d["reconnexion_preventive_s"] = self.reconnexion_preventive_s
+        if self.ptz:
+            d["ptz"] = True
+            d["onvif_profile"] = self.onvif_profile
         return d
 
 
@@ -265,9 +306,9 @@ def load_config(path: str) -> AppConfig:
             if profil not in PROFILS:
                 cfg.warnings.append(f"[{cam_id}] profil '{profil}' inconnu → normal")
                 profil = "normal"
-            if marque == "custom":
+            if marque in MARQUES_URL_LIBRE:
                 if not (c.get("url_substream") or c.get("url_mainstream")):
-                    raise ValueError("marque 'custom' : url_substream ou url_mainstream requis")
+                    raise ValueError(f"marque '{marque}' : url_substream ou url_mainstream requis")
             elif not c.get("hote"):
                 raise ValueError("champ 'hote' requis")
 
@@ -287,7 +328,9 @@ def load_config(path: str) -> AppConfig:
                 url_snapshot=str(c.get("url_snapshot", "")),
                 port_http=int(c.get("port_http", 80)),
                 photo_intervalle_s=max(2, int(c.get("photo_intervalle_s", 10))),
-                reconnexion_preventive_s=int(c.get("reconnexion_preventive_s", 0)),
+                reconnexion_preventive_s=max(0, int(c.get("reconnexion_preventive_s", 0))),
+                ptz=bool(c.get("ptz", False)),
+                onvif_profile=str(c.get("onvif_profile", "")),
             ))
             ids_vus.add(cam_id)
         except (KeyError, ValueError, TypeError) as e:

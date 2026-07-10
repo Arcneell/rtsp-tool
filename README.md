@@ -1,8 +1,11 @@
 # RTSP-TOOL
 
-Desktop viewer for RTSP streams from Hikvision and Dahua DVRs, for Windows and Linux.
+Desktop viewer for RTSP streams from IP DVRs and cameras, for Windows and Linux.
 Grid and single-camera views, automatic rotation and configurable sequences, with
 per-camera bandwidth profiles so large grids stay usable over slow links.
+
+Works with Hikvision and Dahua natively, several other brands via URL templates, and
+any ONVIF device through auto-discovery.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.11%2B-3776ab.svg)
@@ -15,8 +18,14 @@ per-camera bandwidth profiles so large grids stay usable over slow links.
 - Sequences ("loops"): ordered steps (grid or single view + cameras + duration) played
   on repeat, with a built-in editor.
 - Per-camera bandwidth profiles (see below).
+- **Wide device support**: Hikvision, Dahua, Amcrest, Reolink, Uniview, Axis, Vivotek,
+  Foscam, TP-Link/Tapo via built-in URL templates, plus **ONVIF** for anything else.
+- **ONVIF network discovery**: scan the LAN, pick the cameras, and their stream URLs
+  (main + sub), snapshot URL and PTZ capability are resolved automatically.
+- **PTZ control** for motorised ONVIF cameras (pan/tilt/zoom pad in single view).
+- **Digital zoom** on any tile, and a **"test connection"** button when adding a camera.
 - Whole-DVR import: channels and their names are discovered over the Hikvision ISAPI, or
-  listed manually for Dahua.
+  listed manually for other brands.
 - Reconnection with exponential backoff; retries stop on authentication failure to avoid
   locking the DVR account.
 - Snapshot capture, per-tile and total bitrate, multi-monitor full screen, dark theme.
@@ -77,19 +86,25 @@ docker run --rm -v "${PWD}:/src" -w /src debian:12 bash packaging/build_deb.sh
 
 ```
 rtsp_tool/
-├── config.py             Data model and config.yaml read/write
+├── config.py             Data model, brand URL templates, config.yaml read/write
 ├── probe.py              RTSP failure classification (auth / timeout / network)
 ├── snapshot.py           JPEG snapshots (ISAPI/CGI) and Hikvision channel discovery
+├── onvif.py              ONVIF: WS-Discovery, stream/snapshot URIs, PTZ (no heavy deps)
 ├── player.py             libmpv loading, RTSP settings, upscaling
 └── ui/
     ├── main_window.py    Grid/single views, rotation, loops, full screen
-    ├── tile.py           Video tile: state machine, backoff, stop on 401, bitrate
+    ├── tile.py           Video tile: state machine, backoff, stop on 401, zoom, PTZ
     ├── photo_tile.py     Photo-mode tile (extreme-eco profile)
-    ├── config_dialogs.py Sites, cameras, whole-DVR import
+    ├── config_dialogs.py Sites, cameras, whole-DVR import, ONVIF network scan
     ├── sequence_editor.py Loop editor
     └── icons.py          SVG icons
 packaging/                .deb build, icon generation, deployment guide
 ```
+
+ONVIF is implemented directly over SOAP/HTTP (WS-UsernameToken digest auth) — no
+`zeep`/`onvif-zeep` dependency. Network discovery uses WS-Discovery multicast, which
+does not cross VLAN/VPN boundaries; cameras on routed subnets are added by direct IP
+instead (the ONVIF client resolves their stream URLs the same way).
 
 Each tile runs its own libmpv instance on a separate thread, so a failing stream does not
 affect the others. On an authentication failure the tile stops retrying: rotation and

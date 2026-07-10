@@ -19,8 +19,8 @@ from enum import Enum, auto
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QMenu, QSizePolicy,
-                               QStackedLayout, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QMenu, QPushButton,
+                               QSizePolicy, QStackedLayout, QVBoxLayout, QWidget)
 
 from ..config import Camera, mask_url
 from ..player import MPV_IMPORT_ERROR, create_player, mpv_disponible
@@ -95,7 +95,7 @@ class VideoTile(QFrame):
     # délivrés sur le thread Qt (queued)
     _evt_playing = Signal()
     _evt_ended = Signal(str)
-    _probe_done = Signal(str, str)          # kind, detail
+    _probe_done = Signal(int, str, str)     # génération, kind, detail
 
     def __init__(self, camera: Camera, vue: str, parent=None):
         super().__init__(parent)
@@ -109,6 +109,8 @@ class VideoTile(QFrame):
         self._stopping = False
         self._failures = 0
         self._probing = False
+        self._gen = 0                       # génération : invalide les résultats async périmés
+        self._zoom = 0.0                    # zoom numérique (video-zoom mpv, log2)
         self._log_tail = deque(maxlen=80)   # dernières lignes mpv pour diagnostic
 
         self._build_ui()
@@ -172,7 +174,49 @@ class VideoTile(QFrame):
         self._stack.addWidget(self._video)    # index 1
         root.addWidget(body, 1)
 
+        # barre de commandes (vue mono) : zoom numérique + PTZ si motorisée
+        if self.vue == "mono":
+            root.addWidget(self._build_controls())
+
         self._set_state(TileState.IDLE, "En attente")
+
+    def _build_controls(self) -> QWidget:
+        from .icons import icon
+        bar = QWidget()
+        bar.setStyleSheet("background-color: #1c1c1c;")
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(6, 3, 6, 3)
+        h.setSpacing(4)
+
+        if self.camera.ptz:
+            for libelle, dx, dy, dz, info in (
+                ("↖", -0.5, 0.5, 0, "haut-gauche"), ("↑", 0, 0.5, 0, "haut"),
+                ("↗", 0.5, 0.5, 0, "haut-droite"), ("←", -0.5, 0, 0, "gauche"),
+                ("→", 0.5, 0, 0, "droite"), ("↙", -0.5, -0.5, 0, "bas-gauche"),
+                ("↓", 0, -0.5, 0, "bas"), ("↘", 0.5, -0.5, 0, "bas-droite"),
+            ):
+                b = QPushButton(libelle)
+                b.setFixedWidth(26)
+                b.setToolTip(f"PTZ {info} (maintenir)")
+                b.pressed.connect(lambda x=dx, y=dy, z=dz: self._ptz(x, y, z))
+                b.released.connect(self._ptz_stop)
+                h.addWidget(b)
+            zin = QPushButton("Z+"); zin.setFixedWidth(30); zin.setToolTip("Zoom optique (maintenir)")
+            zin.pressed.connect(lambda: self._ptz(0, 0, 0.5)); zin.released.connect(self._ptz_stop)
+            zout = QPushButton("Z−"); zout.setFixedWidth(30); zout.setToolTip("Dézoom optique (maintenir)")
+            zout.pressed.connect(lambda: self._ptz(0, 0, -0.5)); zout.released.connect(self._ptz_stop)
+            h.addWidget(zin); h.addWidget(zout)
+            h.addSpacing(10)
+
+        h.addStretch()
+        h.addWidget(QLabel("Zoom num. :"))
+        for txt, fn, tip in (("＋", self.zoom_in, "Zoom numérique avant"),
+                             ("－", self.zoom_out, "Zoom numérique arrière"),
+                             ("⟳", self.zoom_reset, "Réinitialiser le zoom")):
+            b = QPushButton(txt); b.setFixedWidth(28); b.setToolTip(tip)
+            b.clicked.connect(fn)
+            h.addWidget(b)
+        return bar
 
     def _flux_text(self) -> str:
         flux = self.camera.flux_pour_vue(self.vue)
@@ -212,6 +256,61 @@ class VideoTile(QFrame):
         except Exception as e:
             logger.warning(f"[{self.camera.id}] capture impossible : {e}")
 
+    # ------------------------------------------------------ zoom numérique
+
+    def zoom_in(self):
+        self._set_zoom(self._zoom + 0.3)
+
+    def zoom_out(self):
+        self._set_zoom(self._zoom - 0.3)
+
+    def zoom_reset(self):
+        self._set_zoom(0.0)
+
+    def _set_zoom(self, z: float):
+        self._zoom = max(0.0, min(z, 3.0))
+        if self._player is None:
+            return
+        try:
+            self._player["video-zoom"] = self._zoom
+            if self._zoom == 0.0:                 # recentre en dézoom complet
+                self._player["video-pan-x"] = 0.0
+                self._player["video-pan-y"] = 0.0
+        except Exception:
+            pass
+
+    # -------------------------------------------------------------- PTZ
+
+    def _ptz_client(self):
+        if getattr(self, "_ptz_cam", None) is None:
+            from ..onvif import OnvifCamera
+            cam = self.camera
+            self._ptz_cam = OnvifCamera(cam.hote, cam.user, cam.password,
+                                        port=cam.port_http)
+        return self._ptz_cam
+
+    def _ptz(self, pan: float, tilt: float, zoom: float):
+        if not self.camera.ptz:
+            return
+        tok = self.camera.onvif_profile
+        def work():
+            try:
+                self._ptz_client().ptz_move(tok, pan, tilt, zoom)
+            except Exception as e:
+                logger.warning(f"[{self.camera.id}] PTZ move: {e}")
+        threading.Thread(target=work, daemon=True, name=f"ptz-{self.camera.id}").start()
+
+    def _ptz_stop(self):
+        if not self.camera.ptz:
+            return
+        tok = self.camera.onvif_profile
+        def work():
+            try:
+                self._ptz_client().ptz_stop(tok)
+            except Exception as e:
+                logger.warning(f"[{self.camera.id}] PTZ stop: {e}")
+        threading.Thread(target=work, daemon=True, name=f"ptz-stop-{self.camera.id}").start()
+
     def _update_debit(self):
         """Affiche le débit réseau réellement consommé par la tuile."""
         if self._player is None or self.state != TileState.PLAYING:
@@ -246,6 +345,8 @@ class VideoTile(QFrame):
     def stop(self, message: str = "En pause — flux fermé"):
         """Ferme le flux réseau (caméra hors écran = zéro connexion)."""
         self._stopping = True
+        self._gen += 1              # invalide toute sonde/diagnostic en vol
+        self._probing = False
         self._connect_timer.stop()
         self._retry_timer.stop()
         self._preventive_timer.stop()
@@ -314,6 +415,8 @@ class VideoTile(QFrame):
         except Exception as e:
             self._set_state(TileState.NO_PLAYER, f"Erreur lecteur : {e}")
             return
+        self._gen += 1              # nouvelle tentative : périme les sondes précédentes
+        self._probing = False
         self._set_state(TileState.CONNECTING, "Connexion…")
         self._log_tail.clear()
         try:
@@ -369,7 +472,8 @@ class VideoTile(QFrame):
 
     def _handle_failure(self, kind_hint: str = ""):
         """Classe l'échec : auth → stop définitif ; sinon backoff exponentiel."""
-        log_text = "\n".join(self._log_tail)
+        # copie figée : le thread mpv peut appender pendant qu'on itère
+        log_text = "\n".join(list(self._log_tail))
         kind = classify_text(log_text)
 
         if kind == "auth":
@@ -380,10 +484,11 @@ class VideoTile(QFrame):
         if kind == "other" and not kind_hint and ffprobe_available() and not self._probing:
             self._probing = True
             url = self._url
+            gen = self._gen                 # fige la génération de cette tentative
             def work():
                 k, detail = probe_rtsp(url)
                 try:
-                    self._probe_done.emit(k, detail)
+                    self._probe_done.emit(gen, k, detail)
                 except RuntimeError:
                     pass
             threading.Thread(target=work, daemon=True, name=f"probe-{self.camera.id}").start()
@@ -392,7 +497,10 @@ class VideoTile(QFrame):
 
         self._schedule_retry(kind_hint or kind)
 
-    def _on_probe_done(self, kind: str, detail: str):
+    def _on_probe_done(self, gen: int, kind: str, detail: str):
+        # résultat périmé (tuile arrêtée/reconnectée entre-temps) → ignorer
+        if gen != self._gen:
+            return
         self._probing = False
         if self._stopping or self.state == TileState.AUTH_FAILED:
             return
