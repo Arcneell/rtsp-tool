@@ -224,10 +224,13 @@ class VideoTile(QFrame):
             h.addWidget(b)
         return bar
 
+    _ENH_BADGES = {"off": "", "leger": " · net", "sr": " · net+", "max": " · IA max"}
+
     def _flux_text(self) -> str:
         flux = self.camera.flux_pour_vue(self.vue)
         eco = " · éco" if self.camera.profil.startswith("eco") else ""
-        return ("HD" if flux == "main" else "sub") + eco
+        badge = self._ENH_BADGES.get(self._enhance, "")
+        return ("HD" if flux == "main" else "sub") + eco + badge
 
     def _set_state(self, state: TileState, message: str = ""):
         self.state = state
@@ -300,8 +303,9 @@ class VideoTile(QFrame):
     # ----------------------------------------------------- amélioration image
 
     def set_enhance(self, niveau: str):
-        """Change le niveau d'amélioration à chaud (off/leger/sr)."""
+        """Change le niveau d'amélioration à chaud (off/leger/sr/max)."""
         self._enhance = niveau
+        self._flux_label.setText(self._flux_text())
         if self.state == TileState.PLAYING:
             self._apply_enhance()
 

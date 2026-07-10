@@ -90,7 +90,7 @@ MARQUE_LABELS = {
 MARQUES = tuple(MARQUE_LABELS)               # toutes les marques connues
 MARQUES_URL_LIBRE = ("onvif", "custom")      # pas de gabarit : URLs stockées
 LIENS = ("fibre", "4g")
-ENHANCE_NIVEAUX = ("off", "leger", "sr")     # amélioration d'image (cf. enhance.py)
+ENHANCE_NIVEAUX = ("off", "leger", "sr", "max")   # amélioration d'image (cf. enhance.py)
 
 
 def default_config_path() -> str:

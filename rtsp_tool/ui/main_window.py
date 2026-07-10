@@ -116,10 +116,12 @@ class MainWindow(QMainWindow):
         self._enh_combo.addItem("Selon caméra", "auto")
         self._enh_combo.addItem("Aucune", "off")
         self._enh_combo.addItem("Légère", "leger")
-        self._enh_combo.addItem("Super-résolution", "sr")
+        self._enh_combo.addItem("Forte", "sr")
+        self._enh_combo.addItem("Maximale GPU", "max")
         self._enh_combo.setToolTip(
             "Amélioration d'image appliquée en direct à toutes les tuiles.\n"
-            "« Super-résolution » = réseau de neurones GPU (Anime4K / FSRCNNX).")
+            "Légère/Forte : déblocage + netteté adaptative.\n"
+            "Maximale GPU : déblocage max + restauration neuronale lourde + upscale ×2.")
         self._enh_combo.currentIndexChanged.connect(self._enhance_change)
         tb.addWidget(self._enh_combo)
         act_dl = QAction(icon("plus"), "Moteur CCTV…", self)

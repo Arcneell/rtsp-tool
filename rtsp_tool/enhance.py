@@ -27,11 +27,12 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-NIVEAUX = ("off", "leger", "sr")
+NIVEAUX = ("off", "leger", "sr", "max")
 NIVEAU_LABELS = {
     "off": "Aucune",
     "leger": "Légère — déblocage rapide + netteté",
-    "sr": "Maximale — déblocage fort (+ IA si basse résolution)",
+    "sr": "Forte — déblocage fort (+ IA si basse résolution)",
+    "max": "Maximale GPU — déblocage + restauration IA lourde + upscale ×2",
 }
 
 # Seuil sous lequel un upscale neuronal apporte vraiment quelque chose. Au-delà
@@ -102,23 +103,41 @@ def resolve(niveau: str, vue: str, src_h: int = 0) -> dict:
         return {"vf": "lavfi=[pp7=qp=4:mode=medium]", "glsl": cas,
                 "deband": True, "sharpen": (0.0 if cas else 0.5)}
 
-    # niveau "sr" — déblocage FORT (+ IA si basse résolution)
-    vf = "lavfi=[spp=4:6:1]" if vue == "mono" else "lavfi=[pp7=qp=5:mode=medium]"
-    glsl = []
-    if src_h and src_h <= SEUIL_SR_PX:            # vraie basse résolution : upscale IA utile
-        if vue == "mono" and fsrcnnx_present():
-            glsl += _chain(FSRCNNX_NOM)
-        elif vue == "mono":
-            glsl += _chain("Anime4K_Clamp_Highlights.glsl",
-                           "Anime4K_Restore_CNN_M.glsl",
-                           "Anime4K_Upscale_CNN_x2_M.glsl")
-        else:
-            glsl += _chain("Anime4K_Clamp_Highlights.glsl",
-                           "Anime4K_Restore_CNN_S.glsl",
-                           "Anime4K_Upscale_CNN_x2_S.glsl")
-    glsl += cas
-    return {"vf": vf, "glsl": glsl, "deband": True,
-            "sharpen": (0.0 if cas else 0.6)}
+    if niveau == "sr":
+        # déblocage FORT (+ IA seulement si vraie basse résolution)
+        vf = "lavfi=[spp=4:6:1]" if vue == "mono" else "lavfi=[pp7=qp=5:mode=medium]"
+        glsl = []
+        if src_h and src_h <= SEUIL_SR_PX:
+            if vue == "mono" and fsrcnnx_present():
+                glsl += _chain(FSRCNNX_NOM)
+            elif vue == "mono":
+                glsl += _chain("Anime4K_Clamp_Highlights.glsl",
+                               "Anime4K_Restore_CNN_M.glsl",
+                               "Anime4K_Upscale_CNN_x2_M.glsl")
+            else:
+                glsl += _chain("Anime4K_Clamp_Highlights.glsl",
+                               "Anime4K_Restore_CNN_S.glsl",
+                               "Anime4K_Upscale_CNN_x2_S.glsl")
+        glsl += cas
+        return {"vf": vf, "glsl": glsl, "deband": True,
+                "sharpen": (0.0 if cas else 0.6)}
+
+    # niveau "max" — tout ce que le GPU peut donner, quelle que soit la source.
+    # Recette calibrée en A/B sur frame CCTV réelle :
+    #   spp=6 (déblocage qualité max) + hqdn3d ciblé chroma (efface les pavés de
+    #   couleur du 4:2:0 bas débit) puis restauration neuronale lourde + upscale ×2.
+    #   PAS d'accentuation finale : elle re-gravait les bords de blocs résiduels.
+    vf = "lavfi=[spp=6:4:1,hqdn3d=0:8:0:10]"
+    if vue == "mono":
+        upscale = [FSRCNNX_NOM] if fsrcnnx_present() else ["Anime4K_Upscale_CNN_x2_VL.glsl"]
+        glsl = _chain("Anime4K_Clamp_Highlights.glsl",
+                      "Anime4K_Restore_CNN_VL.glsl",
+                      *upscale)
+    else:                                          # grille : modèles moyens ×N tuiles
+        glsl = _chain("Anime4K_Clamp_Highlights.glsl",
+                      "Anime4K_Restore_CNN_M.glsl",
+                      "Anime4K_Upscale_CNN_x2_S.glsl")
+    return {"vf": vf, "glsl": glsl, "deband": True, "sharpen": 0.0}
 
 
 def sr_disponible() -> bool:
