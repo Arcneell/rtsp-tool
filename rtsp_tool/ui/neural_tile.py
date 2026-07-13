@@ -130,7 +130,8 @@ class NeuralTile(QFrame):
         """Adapte la résolution d'entrée du réseau à la taille affichée."""
         if self._worker is None:
             return
-        h_max = 360 if self.vue == "mono" else 270   # grille : GPU partagé
+        # plein écran : jusqu'à la source complète ; grille : GPU partagé
+        h_max = 576 if self.vue == "mono" else 270
         self._worker.target_h = neural.hauteur_pour_affichage(self.height(), h_max)
 
     def stop(self, message="En pause"):

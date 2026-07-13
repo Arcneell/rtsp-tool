@@ -25,17 +25,23 @@ CIBLES = {"fluide": 180, "equilibre": 270, "qualite": 360}   # hauteur d'entrée
 CIBLE_DEFAUT = "equilibre"
 
 
-def hauteur_pour_affichage(h_affichage: int, h_max: int = 360) -> int:
+PALIERS = (180, 270, 360, 480, 576)
+
+
+def hauteur_pour_affichage(h_affichage: int, h_max: int = 576) -> int:
     """Hauteur d'entrée réseau adaptée à la taille d'affichage.
 
-    La sortie fait 2× l'entrée : viser une sortie proche de la taille affichée
-    évite le ré-étirement flou par Qt, sans gaspiller de GPU sur des pixels
-    invisibles. Paliers pour garder des perfs prévisibles."""
+    La sortie fait 2× l'entrée : on choisit le premier palier dont la sortie
+    COUVRE la zone affichée (sortie ≥ affichage), pour ne jamais ré-étirer —
+    c'est l'étirement après coup qui rend l'image floue. Plafond selon la vue
+    (plein écran : jusqu'à la résolution source complète)."""
     demi = max(90, h_affichage // 2)
-    for palier in (360, 270, 180):
-        if palier <= h_max and demi >= palier - 30:
+    for palier in PALIERS:
+        if palier > h_max:
+            break
+        if palier >= demi:
             return palier
-    return 180
+    return min(h_max, PALIERS[-1])
 
 _net = None
 _net_lock = threading.Lock()
@@ -167,11 +173,16 @@ class NeuralWorker(threading.Thread):
                 continue
             traite = fid
             try:
-                th = self.target_h
-                tw = int(frame.shape[1] * th / frame.shape[0]) // 2 * 2
-                small = cv2.resize(frame, (tw, th), interpolation=cv2.INTER_AREA)
-                rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+                # jamais plus grand que la source : agrandir l'entrée n'apporte rien
+                th = min(self.target_h, frame.shape[0])
+                tw = max(2, int(frame.shape[1] * th / frame.shape[0])) // 2 * 2
+                if (tw, th) != (frame.shape[1], frame.shape[0]):
+                    frame = cv2.resize(frame, (tw, th), interpolation=cv2.INTER_AREA)
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 out = _super_resolve(rgb)
+                # accentuation légère : compense la douceur du modèle vidéo
+                flou = cv2.GaussianBlur(out, (0, 0), 1.2)
+                out = cv2.addWeighted(out, 1.35, flou, -0.35, 0)
             except Exception as e:
                 logger.warning(f"neural: frame ignorée ({e})")
                 continue
