@@ -118,10 +118,12 @@ class MainWindow(QMainWindow):
         self._enh_combo.addItem("Légère", "leger")
         self._enh_combo.addItem("Forte", "sr")
         self._enh_combo.addItem("Maximale GPU", "max")
+        self._enh_combo.addItem("Temps réel IA (mono)", "rt")
         self._enh_combo.setToolTip(
             "Amélioration d'image appliquée en direct à toutes les tuiles.\n"
             "Légère/Forte : déblocage + netteté adaptative.\n"
-            "Maximale GPU : déblocage max + restauration neuronale lourde + upscale ×2.")
+            "Maximale GPU : déblocage max + restauration neuronale lourde + upscale ×2.\n"
+            "Temps réel IA : reconstruction neuronale image par image (vue mono).")
         self._enh_combo.currentIndexChanged.connect(self._enhance_change)
         tb.addWidget(self._enh_combo)
         act_dl = QAction(icon("plus"), "Moteur CCTV…", self)
@@ -364,11 +366,16 @@ class MainWindow(QMainWindow):
     # ----------------------------------------------------------------- grille
 
     def _make_tile(self, cam, vue: str):
-        if vue == "grille" and cam.profil == "eco-extreme":
+        niveau = self._enhance_niveau(cam)
+        # reconstruction neuronale temps réel : seulement en vue mono (GPU lourd)
+        if niveau == "rt" and vue == "mono":
+            from .neural_tile import NeuralTile
+            tile = NeuralTile(cam, vue)
+        elif vue == "grille" and cam.profil == "eco-extreme":
             tile = PhotoTile(cam, vue)
         else:
             tile = VideoTile(cam, vue)
-            tile.set_enhance(self._enhance_niveau(cam))
+            tile.set_enhance(niveau)
         tile.double_clicked.connect(self._tuile_double_clic)
         tile.state_changed.connect(self._update_status)
         tile.snapshot_saved.connect(
@@ -383,11 +390,20 @@ class MainWindow(QMainWindow):
         self._enhance_override = self._enh_combo.currentData()
         for tile in self._all_video_tiles():
             tile.set_enhance(self._enhance_niveau(tile.camera))
-        if self._enhance_override == "sr":
-            from ..enhance import sr_disponible
-            if not sr_disponible():
+        # « Temps réel IA » change le TYPE de tuile en mono → reconstruire la vue mono
+        if self._mono_tile is not None:
+            cam_id = self._mono_tile.camera.id
+            from .neural_tile import NeuralTile
+            veut_neural = (self._enhance_niveau(self._mono_tile.camera) == "rt")
+            est_neural = isinstance(self._mono_tile, NeuralTile)
+            if veut_neural != est_neural:
+                self._set_mono(cam_id)
+        if self._enhance_override == "rt":
+            from ..neural import disponible
+            if not disponible():
                 self.statusBar().showMessage(
-                    "Super-résolution : shaders introuvables — réinstallez l'application.", 6000)
+                    "Temps réel IA : moteur non installé — clic droit sur une tuile → "
+                    "« Reconstruire l'image (IA) » pour le télécharger.", 8000)
 
     def _all_video_tiles(self):
         cibles = ([self._mono_tile] if self._mono_tile is not None

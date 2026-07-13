@@ -77,15 +77,27 @@ changes little and can even amplify blocks.
 Honest limit: enhancement reconstructs a *plausible* cleaner image — it cannot recover
 information that was never captured (a plate 4 pixels wide stays unreadable).
 
-### AI frame reconstruction (photo mode)
+### Real-time AI reconstruction (single view)
 
-For a single frame, a much heavier model can go further than real-time processing:
-right-click a tile → **"Reconstruire l'image (IA)"** captures the current frame and runs
-it through **Real-ESRGAN** (generative restoration, ×4), showing an original/reconstructed
-side-by-side in ~5–20 s. The result is saved to Pictures/RTSP-TOOL.
+The "Temps réel IA" enhancement level runs a **video super-resolution neural network on
+every frame, live**. The stream is decoded by OpenCV, each frame is downscaled (which also
+averages away compression blocks) and rebuilt ×2 by the network (Real-ESRGAN
+`animevideov3`) on the GPU via Vulkan (ncnn), then displayed.
 
-The engine (`realesrgan-ncnn-vulkan`, BSD-3-Clause, works on any Vulkan GPU) is
-downloaded on demand (~45 MB) into the user profile — not redistributed here.
+Downscaling before the network is the trick: it removes block noise *and* keeps the frame
+rate real-time (network cost scales with input pixels). Measured on an Intel integrated
+GPU: 320×180→640×360 ≈ 30 fps, 480×270→960×540 ≈ 15 fps. It runs in **single view only**
+(one GPU pipeline at a time); grid tiles fall back to the Max level.
+
+### AI frame reconstruction (single frame)
+
+For one frame, a heavier model goes further: right-click a tile → **"Reconstruire l'image
+(IA)"** runs **Real-ESRGAN** ×4 (generative restoration) and shows an original/reconstructed
+side-by-side in ~5–20 s, saved to Pictures/RTSP-TOOL.
+
+The engine (`realesrgan-ncnn-vulkan`, BSD-3-Clause, any Vulkan GPU) is downloaded on demand
+(~45 MB) into the user profile — not redistributed here. Real-time mode reuses its bundled
+video model. Both need `ncnn` + OpenCV (optional dependencies).
 
 **Warning shown in-app**: reconstructed detail is *invented* by the network. It helps
 scene legibility, but a reconstructed plate or face has no identification value.

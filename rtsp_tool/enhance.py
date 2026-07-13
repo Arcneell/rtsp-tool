@@ -27,12 +27,13 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-NIVEAUX = ("off", "leger", "sr", "max")
+NIVEAUX = ("off", "leger", "sr", "max", "rt")
 NIVEAU_LABELS = {
     "off": "Aucune",
     "leger": "Légère — déblocage rapide + netteté",
     "sr": "Forte — déblocage fort (+ IA si basse résolution)",
     "max": "Maximale GPU — déblocage + restauration IA lourde + upscale ×2",
+    "rt": "Temps réel IA — reconstruction neuronale (vue mono)",
 }
 
 # Seuil sous lequel un upscale neuronal apporte vraiment quelque chose. Au-delà
@@ -95,6 +96,10 @@ def resolve(niveau: str, vue: str, src_h: int = 0) -> dict:
     """
     if niveau not in NIVEAUX:
         niveau = "off"
+    # "rt" = tuile neuronale dédiée (voir neural_tile) ; sur une tuile mpv
+    # classique (ex. en grille), on retombe sur le traitement le plus fort.
+    if niveau == "rt":
+        niveau = "max"
     if niveau == "off":
         return {"vf": "", "glsl": [], "deband": False, "sharpen": 0.0}
 
