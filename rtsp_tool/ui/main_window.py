@@ -80,8 +80,7 @@ class MainWindow(QMainWindow):
         # --- rotation automatique ---
         self._act_rotation = QAction(icon("rotate"), "Rotation", self)
         self._act_rotation.setCheckable(True)
-        self._act_rotation.setToolTip(
-            "Fait tourner automatiquement les pages de la grille (ou les caméras en mono)")
+        self._act_rotation.setToolTip("Fait défiler automatiquement les caméras affichées")
         self._act_rotation.toggled.connect(self._rotation_basculee)
         tb.addAction(self._act_rotation)
 
@@ -116,18 +115,13 @@ class MainWindow(QMainWindow):
         self._enh_combo.addItem("Aucune", "off")
         self._enh_combo.addItem("Légère", "leger")
         self._enh_combo.addItem("Forte", "sr")
-        self._enh_combo.addItem("Maximale GPU", "max")
-        self._enh_combo.addItem("Temps réel IA (mono)", "rt")
-        self._enh_combo.setToolTip(
-            "Amélioration d'image appliquée en direct à toutes les tuiles.\n"
-            "Légère/Forte : déblocage + netteté adaptative.\n"
-            "Maximale GPU : déblocage max + restauration neuronale lourde + upscale ×2.\n"
-            "Temps réel IA : reconstruction neuronale image par image (vue mono).")
+        self._enh_combo.addItem("Maximale", "max")
+        self._enh_combo.addItem("Reconstruction IA", "rt")
+        self._enh_combo.setToolTip("Amélioration de l'image des caméras")
         self._enh_combo.currentIndexChanged.connect(self._enhance_change)
         tb.addWidget(self._enh_combo)
-        act_dl = QAction(icon("plus"), "Moteur CCTV…", self)
-        act_dl.setToolTip("Télécharger le moteur de super-résolution FSRCNNX "
-                          "(optimisé vidéosurveillance)")
+        act_dl = QAction(icon("plus"), "Moteur de netteté…", self)
+        act_dl.setToolTip("Télécharge un moteur de netteté supplémentaire (FSRCNNX)")
         act_dl.triggered.connect(self._telecharger_fsrcnnx)
         tb.addAction(act_dl)
         self._fsrcnnx_fini.connect(self._on_fsrcnnx_fini)
@@ -135,8 +129,7 @@ class MainWindow(QMainWindow):
 
         self._act_pause = QAction(icon("pause"), "Tout arrêter", self)
         self._act_pause.setCheckable(True)
-        self._act_pause.setToolTip(
-            "Ferme tous les flux (zéro bande passante) sans perdre la sélection")
+        self._act_pause.setToolTip("Ferme tous les flux sans perdre la sélection")
         self._act_pause.toggled.connect(self._pause_basculee)
         tb.addAction(self._act_pause)
 
@@ -159,8 +152,7 @@ class MainWindow(QMainWindow):
 
         act_cfg = QAction(icon("settings"), "Configuration", self)
         act_cfg.setShortcut(QKeySequence("Ctrl+,"))
-        act_cfg.setToolTip("Sites, DVR, caméras, rotation — modifiable à tout moment "
-                           "(aussi par clic droit dans le panneau Caméras)")
+        act_cfg.setToolTip("Sites, caméras et réglages")
         act_cfg.triggered.connect(self._ouvrir_configuration)
         tb.addAction(act_cfg)
 
@@ -359,8 +351,7 @@ class MainWindow(QMainWindow):
         self._set_grid(pages[self._page])
         if len(pages) > 1:
             self.statusBar().showMessage(
-                f"Page {self._page + 1}/{len(pages)} — activez la Rotation pour "
-                f"faire défiler automatiquement", 4000)
+                f"Page {self._page + 1}/{len(pages)}", 4000)
 
     # ----------------------------------------------------------------- grille
 
@@ -408,12 +399,12 @@ class MainWindow(QMainWindow):
             from ..neural import disponible
             if not disponible():
                 self.statusBar().showMessage(
-                    "Temps réel IA : moteur non installé — clic droit sur une tuile → "
-                    "« Reconstruire l'image (IA) » pour le télécharger.", 8000)
+                    "Moteur de reconstruction non installé : clic droit sur une caméra, "
+                    "puis « Reconstruire l'image ».", 8000)
             elif len(self._tiles) > 1:
                 self.statusBar().showMessage(
-                    f"IA temps réel sur {len(self._tiles)} tuiles : le débit d'images "
-                    "se partage le GPU (moins de tuiles = plus fluide).", 8000)
+                    f"Reconstruction sur {len(self._tiles)} caméras : la fluidité "
+                    "diminue avec le nombre de caméras affichées.", 8000)
 
     def _all_video_tiles(self):
         cibles = ([self._mono_tile] if self._mono_tile is not None
@@ -423,16 +414,15 @@ class MainWindow(QMainWindow):
     def _telecharger_fsrcnnx(self):
         from ..enhance import fsrcnnx_present
         if fsrcnnx_present():
-            QMessageBox.information(self, "Moteur CCTV",
-                                    "Le moteur FSRCNNX est déjà installé.")
+            QMessageBox.information(self, "Moteur de netteté",
+                                    "Le moteur est déjà installé.")
             return
         if QMessageBox.question(
-                self, "Moteur CCTV (FSRCNNX)",
-                "Télécharger le moteur de super-résolution FSRCNNX (~70 Ko, licence GPL) ?\n\n"
-                "Il est optimisé pour la vidéosurveillance et sera utilisé en vue mono "
-                "à la place d'Anime4K.") != QMessageBox.Yes:
+                self, "Moteur de netteté",
+                "Télécharger le moteur de netteté FSRCNNX (70 Ko) ?"
+        ) != QMessageBox.Yes:
             return
-        self.statusBar().showMessage("Téléchargement de FSRCNNX…")
+        self.statusBar().showMessage("Téléchargement…")
         import threading
         def work():
             from ..enhance import download_fsrcnnx
@@ -442,14 +432,12 @@ class MainWindow(QMainWindow):
 
     def _on_fsrcnnx_fini(self, ok: bool, msg: str):
         if ok:
-            self.statusBar().showMessage("Moteur FSRCNNX installé.", 6000)
+            self.statusBar().showMessage("Moteur de netteté installé.", 5000)
             for tile in self._all_video_tiles():
                 tile.set_enhance(self._enhance_niveau(tile.camera))
         else:
-            QMessageBox.warning(self, "Moteur CCTV",
-                                f"Téléchargement impossible : {msg}\n\n"
-                                "Vous pouvez le placer manuellement dans le dossier "
-                                "shaders du profil utilisateur.")
+            QMessageBox.warning(self, "Moteur de netteté",
+                                f"Téléchargement impossible : {msg}")
 
     def _vider_grille(self):
         for tile in self._tiles.values():
@@ -498,13 +486,11 @@ class MainWindow(QMainWindow):
         ordered = [self._tiles[cid] for cid in ids if cid in self._tiles]
         if not ordered:
             self._placeholder.setText(
-                "Aucune caméra configurée.\n\nCliquez sur « Configuration » dans la "
-                "barre d'outils (ou clic droit dans le panneau Caméras)\npour ajouter "
-                "vos sites et vos DVR — modifiable à tout moment." if not self._cfg.cameras else
-                "Cochez des caméras dans le panneau de gauche.\n\n"
-                "Double-clic sur une tuile : vue mono — clic droit : capture d'image.\n"
-                "Rotation et Boucle (barre d'outils) : défilement automatique.\n"
-                "Clic droit sur un site ou une caméra : modifier la configuration.")
+                "Aucune caméra configurée.\n"
+                "Ouvrez la configuration pour ajouter vos sites et vos DVR."
+                if not self._cfg.cameras else
+                "Cochez des caméras dans le panneau de gauche.\n"
+                "Double-clic : plein écran. Clic droit : options.")
             self._grid_layout.addWidget(self._placeholder, 0, 0)
         else:
             cols = math.ceil(math.sqrt(len(ordered)))
@@ -736,8 +722,8 @@ class MainWindow(QMainWindow):
             self._act_grid.setEnabled(False)
             self._set_grid(etape.cameras)
         self.statusBar().showMessage(
-            f"Boucle « {self._seq.nom} » — étape {self._seq_idx + 1}/{len(etapes)} "
-            f"({etape.duree_s}s)", etape.duree_s * 1000)
+            f"Boucle {self._seq.nom} : étape {self._seq_idx + 1}/{len(etapes)}",
+            etape.duree_s * 1000)
         self._seq_timer.start(etape.duree_s * 1000)
 
     # ------------------------------------------------------------------ divers
@@ -753,7 +739,7 @@ class MainWindow(QMainWindow):
             if tile is None:
                 continue
             if paused:
-                tile.stop("En pause — flux fermé")
+                tile.stop("En pause")
             else:
                 tile.start()
 

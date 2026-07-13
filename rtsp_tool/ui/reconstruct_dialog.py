@@ -20,9 +20,8 @@ from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout, QLabel,
 from .. import reconstruct
 
 AVERTISSEMENT = (
-    "Détails RECONSTRUITS par IA générative : plausibles mais inventés.\n"
-    "Utile pour la lisibilité d'une scène — sans valeur d'identification "
-    "(plaque, visage).")
+    "Les détails de l'image reconstruite sont des estimations du modèle : "
+    "ils ne permettent pas d'identifier une plaque ou un visage.")
 
 
 class _Travail(QObject):
@@ -32,7 +31,7 @@ class _Travail(QObject):
 class ResultatDialog(QDialog):
     def __init__(self, parent, titre: str, src_png: str, dst_png: str):
         super().__init__(parent)
-        self.setWindowTitle(f"Reconstruction IA — {titre}")
+        self.setWindowTitle(f"Reconstruction : {titre}")
 
         avant = QPixmap(src_png)
         apres = QPixmap(dst_png)
@@ -40,7 +39,7 @@ class ResultatDialog(QDialog):
         lbl_avant, lbl_apres = QLabel(), QLabel()
         lbl_avant.setPixmap(avant.scaledToHeight(h, Qt.SmoothTransformation))
         lbl_apres.setPixmap(apres.scaledToHeight(h, Qt.SmoothTransformation))
-        cap_avant, cap_apres = QLabel("Original"), QLabel("Reconstruite (IA)")
+        cap_avant, cap_apres = QLabel("Original"), QLabel("Reconstruite")
         for c in (cap_avant, cap_apres):
             c.setAlignment(Qt.AlignCenter)
             c.setStyleSheet("font-weight: bold;")
@@ -79,9 +78,9 @@ def reconstruire_image(parent, camera, src_png: str):
     """Orchestration complète (téléchargement éventuel + reconstruction + vue)."""
     if not reconstruct.disponible():
         if QMessageBox.question(
-                parent, "Reconstruction IA",
-                "Le moteur de reconstruction (Real-ESRGAN, ~45 Mo) n'est pas "
-                "encore installé.\n\nLe télécharger maintenant ? (une seule fois)"
+                parent, "Reconstruction",
+                "Le moteur de reconstruction (45 Mo) doit être téléchargé "
+                "une première fois. Continuer ?"
         ) != QMessageBox.Yes:
             return
 
@@ -89,8 +88,8 @@ def reconstruire_image(parent, camera, src_png: str):
     dst = str(Path.home() / "Pictures" / "RTSP-TOOL"
               / f"{camera.id}-{stamp}-reconstruite.png")
 
-    prog = QProgressDialog("Reconstruction IA en cours…", None, 0, 0, parent)
-    prog.setWindowTitle("Reconstruction IA")
+    prog = QProgressDialog("Reconstruction en cours…", None, 0, 0, parent)
+    prog.setWindowTitle("Reconstruction")
     prog.setWindowModality(Qt.WindowModal)
     prog.setMinimumDuration(0)
     prog.setCancelButton(None)
@@ -115,7 +114,7 @@ def reconstruire_image(parent, camera, src_png: str):
     def sur_fini(ok: bool, msg: str):
         prog.close()
         if not ok:
-            QMessageBox.warning(parent, "Reconstruction IA",
+            QMessageBox.warning(parent, "Reconstruction",
                                 f"Échec de la reconstruction : {msg}")
             return
         ResultatDialog(parent, camera.nom, src_png, msg).exec()

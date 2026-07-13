@@ -59,7 +59,7 @@ class NeuralTile(QFrame):
         self._dot = QLabel(); self._dot.setFixedSize(10, 10)
         self._title = QLabel(f"{self.camera.nom} — {self.camera.site.nom}")
         self._title.setStyleSheet("color: #d0d0d0; font-weight: bold;")
-        self._info = QLabel("reconstruction temps réel")
+        self._info = QLabel("IA")
         self._info.setStyleSheet("color: #7fb0ff;")
         h.addWidget(self._dot); h.addWidget(self._title)
         h.addStretch(); h.addWidget(self._info)
@@ -111,18 +111,27 @@ class NeuralTile(QFrame):
     def start(self):
         if not neural.disponible():
             self._set_state(TileState.NO_PLAYER,
-                            "Moteur temps réel indisponible\n"
-                            "(clic droit → reconstruction pour l'installer)")
+                            "Moteur de reconstruction non installé.\n"
+                            "Clic droit sur une caméra, puis « Reconstruire "
+                            "l'image » pour le télécharger.")
             return
         if self._worker is not None:
             return
         self._stopped = False
-        self._set_state(TileState.CONNECTING, "Démarrage du réseau…")
+        self._set_state(TileState.CONNECTING, "Démarrage…")
         self._worker = neural.NeuralWorker(
             self._url, self._cible,
             on_frame=lambda a: self._frame_prete.emit(a),
             on_state=lambda s: self._etat.emit(s))
+        self._ajuster_cible()
         self._worker.start()
+
+    def _ajuster_cible(self):
+        """Adapte la résolution d'entrée du réseau à la taille affichée."""
+        if self._worker is None:
+            return
+        h_max = 360 if self.vue == "mono" else 270   # grille : GPU partagé
+        self._worker.target_h = neural.hauteur_pour_affichage(self.height(), h_max)
 
     def stop(self, message="En pause"):
         self._stopped = True
@@ -161,5 +170,6 @@ class NeuralTile(QFrame):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._ajuster_cible()
         if self._last_rgb is not None:
             self._afficher(self._last_rgb)

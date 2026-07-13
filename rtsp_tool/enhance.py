@@ -30,10 +30,10 @@ logger = logging.getLogger(__name__)
 NIVEAUX = ("off", "leger", "sr", "max", "rt")
 NIVEAU_LABELS = {
     "off": "Aucune",
-    "leger": "Légère — déblocage rapide + netteté",
-    "sr": "Forte — déblocage fort (+ IA si basse résolution)",
-    "max": "Maximale GPU — déblocage + restauration IA lourde + upscale ×2",
-    "rt": "Temps réel IA — reconstruction neuronale (vue mono)",
+    "leger": "Légère",
+    "sr": "Forte",
+    "max": "Maximale",
+    "rt": "Reconstruction IA",
 }
 
 # Seuil sous lequel un upscale neuronal apporte vraiment quelque chose. Au-delà

@@ -143,7 +143,7 @@ class PhotoTile(QFrame):
         menu = QMenu(self)
         act = menu.addAction(icon("camera"), "Enregistrer l'image")
         act.setEnabled(self._last_bytes is not None)
-        act_ia = menu.addAction(icon("search"), "Reconstruire l'image (IA)…")
+        act_ia = menu.addAction(icon("search"), "Reconstruire l'image…")
         act_ia.setEnabled(self._last_bytes is not None)
         choix = menu.exec(event.globalPos())
         if choix is act:
@@ -179,7 +179,7 @@ class PhotoTile(QFrame):
         self._set_state(TileState.CONNECTING, "Chargement…")
         self._fetch()
 
-    def stop(self, message: str = "En pause — aucune requête"):
+    def stop(self, message: str = "En pause"):
         self._stopped = True
         self._timer.stop()
         self.debit_bps = 0.0

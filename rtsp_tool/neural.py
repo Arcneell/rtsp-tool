@@ -24,6 +24,19 @@ MODELE = "realesr-animevideov3-x2"          # variante vidéo (légère, x2)
 CIBLES = {"fluide": 180, "equilibre": 270, "qualite": 360}   # hauteur d'entrée
 CIBLE_DEFAUT = "equilibre"
 
+
+def hauteur_pour_affichage(h_affichage: int, h_max: int = 360) -> int:
+    """Hauteur d'entrée réseau adaptée à la taille d'affichage.
+
+    La sortie fait 2× l'entrée : viser une sortie proche de la taille affichée
+    évite le ré-étirement flou par Qt, sans gaspiller de GPU sur des pixels
+    invisibles. Paliers pour garder des perfs prévisibles."""
+    demi = max(90, h_affichage // 2)
+    for palier in (360, 270, 180):
+        if palier <= h_max and demi >= palier - 30:
+            return palier
+    return 180
+
 _net = None
 _net_lock = threading.Lock()
 

@@ -224,7 +224,7 @@ class VideoTile(QFrame):
             h.addWidget(b)
         return bar
 
-    _ENH_BADGES = {"off": "", "leger": " · net", "sr": " · net+", "max": " · IA max"}
+    _ENH_BADGES = {"off": "", "leger": " · net", "sr": " · net+", "max": " · max"}
 
     def _flux_text(self) -> str:
         flux = self.camera.flux_pour_vue(self.vue)
@@ -253,8 +253,7 @@ class VideoTile(QFrame):
         menu = QMenu(self)
         act_snap = menu.addAction(icon("camera"), "Enregistrer une image")
         act_snap.setEnabled(self.state == TileState.PLAYING)
-        act_ia = menu.addAction(icon("search"), "Reconstruire l'image (IA)…")
-        act_ia.setToolTip("Reconstruction complète par IA générative (~10 s)")
+        act_ia = menu.addAction(icon("search"), "Reconstruire l'image…")
         act_ia.setEnabled(self.state == TileState.PLAYING)
 
         sous = menu.addMenu("Amélioration d'image")
@@ -442,12 +441,12 @@ class VideoTile(QFrame):
             return
         if not mpv_disponible():
             self._set_state(TileState.NO_PLAYER,
-                            f"libmpv introuvable — voir README\n({MPV_IMPORT_ERROR})")
+                            f"Lecteur vidéo (libmpv) introuvable.\n{MPV_IMPORT_ERROR}")
             return
         self._stopping = False
         self._connect()
 
-    def stop(self, message: str = "En pause — flux fermé"):
+    def stop(self, message: str = "En pause"):
         """Ferme le flux réseau (caméra hors écran = zéro connexion)."""
         self._stopping = True
         self._gen += 1              # invalide toute sonde/diagnostic en vol
@@ -636,9 +635,9 @@ class VideoTile(QFrame):
         self._retry_timer.stop()
         self._set_state(
             TileState.AUTH_FAILED,
-            "Identifiants refusés (401)\n"
-            "Tentatives stoppées pour protéger le compte DVR.\n"
-            "Corriger via le bouton Configuration.")
+            "Identifiants refusés.\n"
+            "Corrigez-les dans la configuration ; les essais sont\n"
+            "suspendus pour éviter le blocage du compte DVR.")
 
     def _schedule_retry(self, kind: str):
         self._failures += 1

@@ -176,7 +176,7 @@ class CameraDialog(QDialog):
         self._pwd = QLineEdit()
         self._pwd.setEchoMode(QLineEdit.Password)
         if self._pwd_existe:
-            self._pwd.setPlaceholderText("•••••••• — laisser vide pour ne pas changer")
+            self._pwd.setPlaceholderText("Laisser vide pour conserver le mot de passe actuel")
         pwd_row = QHBoxLayout()
         pwd_row.addWidget(self._pwd, 1)
 
@@ -483,15 +483,13 @@ class DvrDialog(QDialog):
     def _afficher_canaux(self, canaux: list, erreur: str):
         self._btn_scan.setEnabled(self._marque.currentData() == "hikvision")
         if erreur:
-            self._statut.setText(f"Échec : {erreur} — utilisez la génération manuelle.")
+            self._statut.setText(f"Échec : {erreur}. Utilisez la liste manuelle.")
             return
-        self._statut.setText(f"{len(canaux)} canal/canaux trouvés — décochez ceux "
-                             "à ignorer, ajustez les noms.")
+        self._statut.setText(f"{len(canaux)} canaux trouvés. Décochez ceux à ignorer.")
         self._remplir_table(canaux)
 
     def _generer_manuel(self):
-        self._statut.setText("Liste générée — décochez les canaux inutilisés, "
-                             "renommez les caméras.")
+        self._statut.setText("Liste générée. Décochez les canaux inutilisés.")
         self._remplir_table([(i, f"Caméra {i}") for i in range(1, self._nb.value() + 1)])
 
     def _remplir_table(self, canaux: list):
@@ -520,8 +518,7 @@ class DvrDialog(QDialog):
         lignes = [r for r in range(self._table.rowCount())
                   if self._table.item(r, 0).checkState() == Qt.Checked]
         if not lignes:
-            QMessageBox.warning(self, "DVR", "Aucun canal coché — interrogez le DVR "
-                                             "ou générez la liste manuellement.")
+            QMessageBox.warning(self, "DVR", "Aucun canal coché.")
             return
 
         site = self._cfg.site(self._site.currentData())
@@ -583,8 +580,7 @@ class OnvifScanDialog(QDialog):
 
         self._btn_scan = QPushButton(icon("search"), " Rechercher les caméras ONVIF")
         self._btn_scan.clicked.connect(self._scanner)
-        self._statut = QLabel("Les caméras/NVR compatibles ONVIF du réseau local "
-                              "seront listées ici.")
+        self._statut = QLabel("Recherche des caméras ONVIF du réseau local.")
         self._statut.setWordWrap(True)
         self._statut.setStyleSheet("color: #909090;")
 
@@ -638,12 +634,10 @@ class OnvifScanDialog(QDialog):
         self._devices = devices
         self._table.setRowCount(0)
         if not devices:
-            self._statut.setText("Aucune caméra ONVIF détectée. Vérifiez que l'ONVIF "
-                                 "est activé sur les appareils et que vous êtes sur le "
-                                 "même réseau (le multicast ne franchit pas les VLAN/VPN).")
+            self._statut.setText("Aucune caméra détectée. Vérifiez que l'ONVIF est activé "
+                                 "et que vous êtes sur le même réseau.")
             return
-        self._statut.setText(f"{len(devices)} caméra(s) ONVIF trouvée(s). Renseignez "
-                             "les identifiants, cochez, puis ajoutez.")
+        self._statut.setText(f"{len(devices)} caméras trouvées. Renseignez les identifiants puis validez.")
         for dev in devices:
             r = self._table.rowCount()
             self._table.insertRow(r)
@@ -781,8 +775,7 @@ class ConfigDialog(QDialog):
         centre.addWidget(self._tree, 1)
         centre.addLayout(droite)
 
-        note = QLabel("Les identifiants sont stockés dans le fichier local de "
-                      "l'application — utilisez un compte DVR en lecture seule.")
+        note = QLabel("Utilisez de préférence un compte DVR en lecture seule.")
         note.setWordWrap(True)
         note.setStyleSheet("color: #909090;")
 
