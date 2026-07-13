@@ -77,6 +77,19 @@ changes little and can even amplify blocks.
 Honest limit: enhancement reconstructs a *plausible* cleaner image — it cannot recover
 information that was never captured (a plate 4 pixels wide stays unreadable).
 
+### AI frame reconstruction (photo mode)
+
+For a single frame, a much heavier model can go further than real-time processing:
+right-click a tile → **"Reconstruire l'image (IA)"** captures the current frame and runs
+it through **Real-ESRGAN** (generative restoration, ×4), showing an original/reconstructed
+side-by-side in ~5–20 s. The result is saved to Pictures/RTSP-TOOL.
+
+The engine (`realesrgan-ncnn-vulkan`, BSD-3-Clause, works on any Vulkan GPU) is
+downloaded on demand (~45 MB) into the user profile — not redistributed here.
+
+**Warning shown in-app**: reconstructed detail is *invented* by the network. It helps
+scene legibility, but a reconstructed plate or face has no identification value.
+
 FSRCNNX is GPL-licensed and therefore **not** bundled; it is downloaded on demand into
 the user profile and never redistributed by this repository.
 

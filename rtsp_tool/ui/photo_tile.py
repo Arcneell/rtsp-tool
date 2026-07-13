@@ -143,8 +143,27 @@ class PhotoTile(QFrame):
         menu = QMenu(self)
         act = menu.addAction(icon("camera"), "Enregistrer l'image")
         act.setEnabled(self._last_bytes is not None)
-        if menu.exec(event.globalPos()) is act:
+        act_ia = menu.addAction(icon("search"), "Reconstruire l'image (IA)…")
+        act_ia.setEnabled(self._last_bytes is not None)
+        choix = menu.exec(event.globalPos())
+        if choix is act:
             self._save_snapshot()
+        elif choix is act_ia:
+            self._reconstruire_ia()
+
+    def _reconstruire_ia(self):
+        if not self._last_bytes:
+            return
+        import os
+        import tempfile
+        fd, tmp = tempfile.mkstemp(suffix=".png", prefix="rtsp-tool-ia-")
+        os.close(fd)
+        from PySide6.QtGui import QPixmap
+        pix = QPixmap()
+        if not pix.loadFromData(self._last_bytes) or not pix.save(tmp, "PNG"):
+            return
+        from .reconstruct_dialog import reconstruire_image
+        reconstruire_image(self.window(), self.camera, tmp)
 
     # ---------------------------------------------------------- cycle de vie
 

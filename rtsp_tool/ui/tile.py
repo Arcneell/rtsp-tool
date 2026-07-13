@@ -253,6 +253,9 @@ class VideoTile(QFrame):
         menu = QMenu(self)
         act_snap = menu.addAction(icon("camera"), "Enregistrer une image")
         act_snap.setEnabled(self.state == TileState.PLAYING)
+        act_ia = menu.addAction(icon("search"), "Reconstruire l'image (IA)…")
+        act_ia.setToolTip("Reconstruction complète par IA générative (~10 s)")
+        act_ia.setEnabled(self.state == TileState.PLAYING)
 
         sous = menu.addMenu("Amélioration d'image")
         for niveau, libelle in NIVEAU_LABELS.items():
@@ -270,8 +273,26 @@ class VideoTile(QFrame):
             a.setChecked(self._aspect_mode == mode)
             a.triggered.connect(lambda _=False, m=mode: self.set_aspect_mode(m))
 
-        if menu.exec(event.globalPos()) is act_snap:
+        choix = menu.exec(event.globalPos())
+        if choix is act_snap:
             self._save_snapshot()
+        elif choix is act_ia:
+            self._reconstruire_ia()
+
+    def _reconstruire_ia(self):
+        """Capture la frame courante et lance la reconstruction IA générative."""
+        if self._player is None or self.state != TileState.PLAYING:
+            return
+        import tempfile
+        fd, tmp = tempfile.mkstemp(suffix=".png", prefix="rtsp-tool-ia-")
+        os.close(fd)
+        try:
+            self._player.command("screenshot-to-file", tmp, "video")
+        except Exception as e:
+            logger.warning(f"[{self.camera.id}] capture IA impossible : {e}")
+            return
+        from .reconstruct_dialog import reconstruire_image
+        reconstruire_image(self.window(), self.camera, tmp)
 
     def set_aspect_mode(self, mode: str):
         self._aspect_mode = mode
