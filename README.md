@@ -36,8 +36,9 @@ accounts and relays the streams; each workstation logs in with a username and pa
 - ONVIF motion is monitored server-side (one subscription per camera) and pushed to
   clients over SSE, filtered to their allowed cameras.
 
-The mode is chosen per workstation in *Configuration → Connexion* and can be changed at
-any time. See [Server](#server-optional) below.
+The mode is chosen per workstation at first launch and then locked: switching it (or the
+server address) afterwards requires an admin account to sign in on that workstation. See
+[Server](#server-optional) below.
 
 ## Features
 
@@ -122,9 +123,14 @@ The server is two containers: a FastAPI control plane and a
 [MediaMTX](https://github.com/bluenviron/mediamtx) stream relay. Streams are proxied
 **on demand** with no re-encoding (H.264 passthrough), so CPU usage stays negligible.
 
+Deploy it on a Linux machine that can reach the DVRs and is reachable by the
+workstations (a small VM, a NAS, a mini-PC). Prerequisites: Docker with the Compose
+plugin (`sudo apt install docker.io docker-compose-v2` on Debian/Ubuntu). Then, from a
+clone of this repository:
+
 ```bash
 cd deploy
-docker compose up -d --build
+docker compose up -d --build     # builds the API image and starts both containers
 ```
 
 - On first start an **admin** account is created; its initial password is printed in
@@ -152,13 +158,33 @@ TLS reverse proxy (Caddy/nginx). `deploy/data/` holds all secrets and is gitigno
 > Note: after editing `deploy/mediamtx.yml`, recreate the relay so it reloads its
 > config: `docker compose up -d --force-recreate mediamtx`.
 
-## Packaging
+## Packaging (client app)
 
-See [packaging/DEPLOIEMENT.md](packaging/DEPLOIEMENT.md) for building and signing the
-Windows exe and building the `.deb` (with icon and menu entry).
+Pre-built Linux packages are attached to each [release](../../releases):
+
+```bash
+sudo apt install ./sentinelle_2.0.0_amd64.deb   # pulls libmpv2 automatically
+```
+
+Then launch **Sentinelle** from the applications menu, or the `sentinelle` command.
+Compatible with Debian 12+ / Ubuntu 24.04+. Under Wayland, if tiles stay black:
+`QT_QPA_PLATFORM=xcb sentinelle`.
+
+Build the `.deb` yourself (works from Windows too, via Docker) — produces
+`dist/sentinelle_<version>_amd64.deb` with icon and menu entry:
 
 ```bash
 docker run --rm -v "${PWD}:/src" -w /src debian:12 bash packaging/build_deb.sh
+```
+
+Windows executable (PyInstaller):
+
+```powershell
+pip install pyinstaller
+pyinstaller --noconfirm --windowed --name Sentinelle --icon packaging/sentinelle.ico `
+    --add-binary "lib\libmpv-2.dll;." `
+    --add-data "sentinelle\ui\sentinelle.ico;sentinelle/ui" `
+    --add-data "sentinelle\ui\sentinelle.png;sentinelle/ui" run.py
 ```
 
 ## Architecture
@@ -189,7 +215,7 @@ sentinelle_server/
 ├── relay.py              MediaMTX orchestration (one on-demand path per stream)
 └── motion.py             Server-side ONVIF motion monitor + event hub
 deploy/                   docker-compose.yml, Dockerfile.server, mediamtx.yml
-packaging/                .deb build, icon generation, deployment guide
+packaging/                .deb build script, icon generation
 ```
 
 ONVIF is implemented directly over SOAP/HTTP (WS-UsernameToken digest auth) — no
