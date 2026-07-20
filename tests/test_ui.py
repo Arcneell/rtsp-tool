@@ -6,13 +6,9 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-import pytest
-
-from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
 app = QApplication.instance() or QApplication([])
-QSettings("Sentinelle", "viewer").setValue("mode", "local")
 
 from sentinelle.ui.theme import apply_theme
 apply_theme(app)

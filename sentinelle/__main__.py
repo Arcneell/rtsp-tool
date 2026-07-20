@@ -50,8 +50,8 @@ def main() -> int:
     # Premier lancement : choix du mode AVANT d'ouvrir l'application. Fermer
     # l'assistant sans choisir n'entre pas dans l'appli — on quitte, et le choix
     # sera redemandé au prochain lancement.
-    from PySide6.QtCore import QSettings
-    settings = QSettings("Sentinelle", "viewer")
+    from .reglages import reglages
+    settings = reglages()
     if not settings.contains("mode"):
         from .ui.setup_dialog import SetupDialog
         dlg = SetupDialog()

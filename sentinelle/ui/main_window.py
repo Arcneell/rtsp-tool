@@ -11,7 +11,7 @@ Règles bande passante appliquées ici :
 import logging
 import math
 
-from PySide6.QtCore import QSettings, QSize, Qt, QTimer
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (QComboBox, QFrame, QGridLayout, QHBoxLayout,
                                QLabel, QMainWindow, QMenu, QMessageBox,
@@ -48,7 +48,8 @@ class MainWindow(QMainWindow):
         self._motion = None                         # moniteur local ou écouteur serveur
         self._motion_ids = set()                    # caméras actuellement en mouvement
         self._icon_widgets = []                     # (widget, nom_icone) à recolorer
-        self._settings = QSettings("Sentinelle", "viewer")
+        from ..reglages import reglages
+        self._settings = reglages()
         self._remote = self._creer_remote()         # None = mode autonome
 
         self.setWindowTitle(APP_NAME)
