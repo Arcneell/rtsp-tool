@@ -1157,13 +1157,20 @@ class MainWindow(QMainWindow):
         self._topbar.hide()
         self._sidebar.hide()
         self.statusBar().hide()
-        # Cible l'écran voulu par un simple déplacement, PAS par setGeometry sur
-        # le cadre : imposer 1920×1080 à une fenêtre encore encadrée dépasse
-        # l'écran (avertissement Windows) et corrompait la géométrie normale, si
-        # bien qu'en revenant la barre de titre se retrouvait hors écran.
+        # Cible l'écran voulu en plaçant d'abord la fenêtre BIEN À L'INTÉRIEUR
+        # de cet écran (à une taille qui rentre, cadre compris) : ainsi elle est
+        # forcément visible sur le bon écran et Windows n'émet pas l'avertissement
+        # « Unable to set geometry ». showFullScreen() la déploie ensuite sur cet
+        # écran. (Imposer directement 1920×1080 à la fenêtre encadrée la faisait
+        # dépasser l'écran ; un simple move() vers le coin pouvait la faire sortir
+        # de la zone visible et « disparaître ».)
         if self.isFullScreen():
             self.showNormal()                    # requis pour changer d'écran
-        self.move(ecran.geometry().topLeft())
+        g = ecran.geometry()
+        larg = min(self.width(), g.width() - 40)
+        haut = min(self.height(), g.height() - 80)
+        self.setGeometry(g.x() + (g.width() - larg) // 2,
+                         g.y() + (g.height() - haut) // 2, larg, haut)
         self.showFullScreen()
 
     def _toggle_fullscreen(self):
