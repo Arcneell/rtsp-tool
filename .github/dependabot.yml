@@ -1,0 +1,29 @@
+# Dependabot — mises à jour de dépendances.
+# Les PR non cassantes (patch/minor) sont fusionnées automatiquement quand la CI
+# passe (voir .github/workflows/dependabot-automerge.yml) ; les mises à jour
+# majeures (potentiellement cassantes) restent en revue manuelle.
+version: 2
+updates:
+  # Actions GitHub utilisées par les workflows (.github/workflows/*.yml)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+
+  # Dépendances Python du client et du serveur (requirements*.txt)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "deps"
+
+  # Image de base du serveur (deploy/Dockerfile.server) + docker-compose
+  - package-ecosystem: "docker"
+    directory: "/deploy"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "deps"

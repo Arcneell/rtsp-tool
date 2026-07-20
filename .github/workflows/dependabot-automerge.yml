@@ -1,0 +1,32 @@
+# Fusionne automatiquement les PR de Dependabot NON CASSANTES (patch/minor)
+# une fois la CI verte. Les mises à jour majeures (semver-major, potentiellement
+# cassantes) ne sont PAS fusionnées : elles restent en revue manuelle.
+#
+# Le blocage « quand les tests passent » est assuré par la protection de branche
+# de `main` (le check « test » est requis) : `gh pr merge --auto` n'effectue la
+# fusion qu'après le passage au vert de ce check.
+name: Dependabot auto-merge
+
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    runs-on: ubuntu-latest
+    if: ${{ github.actor == 'dependabot[bot]' }}
+    steps:
+      - name: Métadonnées de la mise à jour
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Active l'auto-merge (mises à jour non majeures uniquement)
+        if: ${{ steps.meta.outputs.update-type != 'version-update:semver-major' }}
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
