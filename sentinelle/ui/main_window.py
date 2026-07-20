@@ -66,12 +66,12 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ mode serveur
 
     def _creer_remote(self):
-        """Construit l'accès (non authentifié) au serveur si le mode le prévoit."""
+        """Construit l'accès (non authentifié) au serveur si le mode le prévoit.
+        L'adresse peut être vide au tout premier paramétrage : elle sera saisie
+        sur la page de connexion."""
         if self._settings.value("mode", "local") != "serveur":
             return None
         url = self._settings.value("serveur_url", "", type=str).strip()
-        if not url:
-            return None
         from ..remote import ServeurDistant
         return ServeurDistant(url)
 
@@ -91,9 +91,11 @@ class MainWindow(QMainWindow):
                 return True
             except ErreurServeur:
                 pass
-        # connexion interactive
+        # connexion interactive ; l'adresse est saisissable seulement si elle
+        # n'est pas encore connue (premier paramétrage du poste)
         from .login_dialog import LoginDialog
-        dlg = LoginDialog(self._remote.base, user, self)
+        dlg = LoginDialog(self._remote.base, user, self,
+                          url_editable=not self._remote.base)
         if not dlg.exec() or dlg.remote is None:
             return False
         self._remote = dlg.remote

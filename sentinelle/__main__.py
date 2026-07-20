@@ -61,8 +61,7 @@ def main() -> int:
         settings.remove("serveur_user")
         settings.remove("serveur_pass")
         settings.setValue("mode", dlg.resultat["mode"])
-        if dlg.resultat["mode"] == "serveur":
-            settings.setValue("serveur_url", dlg.resultat["url"])
+        # l'adresse du serveur est saisie à la connexion (page de login)
 
     from .ui.main_window import MainWindow
 

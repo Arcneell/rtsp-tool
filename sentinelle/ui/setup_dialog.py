@@ -1,12 +1,12 @@
 """Assistant de premier lancement : choix du mode de fonctionnement du poste.
 
 Présenté une seule fois (tant que le mode n'a jamais été défini). Le choix est
-ensuite verrouillé : il ne se change qu'avec un compte administrateur.
+ensuite verrouillé : il ne se change qu'avec un compte administrateur. En mode
+serveur, l'adresse et la connexion se saisissent ensuite sur la page de login.
 """
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QDialog, QFrame, QLabel, QLineEdit, QPushButton,
-                               QVBoxLayout)
+from PySide6.QtWidgets import QDialog, QFrame, QLabel, QVBoxLayout
 
 from .icons import app_icon
 from .theme import t
@@ -44,7 +44,7 @@ class _Carte(QFrame):
 
 class SetupDialog(QDialog):
     """Retourne le mode choisi via `resultat` : {"mode": "local"} ou
-    {"mode": "serveur", "url": ...}."""
+    {"mode": "serveur"} (l'adresse est demandée ensuite, à la connexion)."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -52,7 +52,7 @@ class SetupDialog(QDialog):
         self.setWindowTitle("Sentinelle — Premier lancement")
         self.setWindowIcon(app_icon())
         self.setObjectName("setupPage")
-        self.setMinimumWidth(560)
+        self.setFixedWidth(480)
         self.setStyleSheet(f"QDialog#setupPage {{ background: {t('bg')}; }}")
 
         logo = QLabel()
@@ -73,42 +73,11 @@ class SetupDialog(QDialog):
         carte_srv = _Carte(
             "Serveur central",
             "Ce poste se connecte au serveur Sentinelle avec un compte. "
-            "La configuration et les droits sont gérés côté serveur.")
+            "L'adresse et les identifiants sont demandés juste après.")
         carte_srv.clic.connect(self._choix_serveur)
 
-        # étape serveur (masquée au départ)
-        self._bloc_srv = QFrame()
-        bs = QVBoxLayout(self._bloc_srv)
-        bs.setContentsMargins(0, 0, 0, 0)
-        bs.setSpacing(8)
-        self._url = QLineEdit()
-        self._url.setPlaceholderText("Adresse du serveur — http://serveur:8080")
-        self._url.setStyleSheet(
-            f"QLineEdit {{ background: {t('surface_alt')}; color: {t('text')}; "
-            f"border: 1px solid {t('border')}; border-radius: 8px; "
-            f"padding: 11px 14px; font-size: 14px; }}"
-            f"QLineEdit:focus {{ border-color: {t('accent')}; }}")
-        self._url.returnPressed.connect(self._valider_serveur)
-        self._btn_continuer = QPushButton("Continuer")
-        self._btn_continuer.setCursor(Qt.PointingHandCursor)
-        self._btn_continuer.setStyleSheet(
-            f"QPushButton {{ background: {t('accent')}; color: {t('on_accent')}; "
-            f"border: none; border-radius: 8px; padding: 12px; font-size: 14px; "
-            f"font-weight: 600; }}"
-            f"QPushButton:hover {{ background: {t('accent_hover')}; }}")
-        self._btn_continuer.clicked.connect(self._valider_serveur)
-        self._erreur = QLabel("")
-        self._erreur.setAlignment(Qt.AlignCenter)
-        self._erreur.setWordWrap(True)
-        self._erreur.setStyleSheet(f"color: {t('danger')};")
-        self._erreur.hide()
-        bs.addWidget(self._url)
-        bs.addWidget(self._btn_continuer)
-        bs.addWidget(self._erreur)
-        self._bloc_srv.hide()
-
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(40, 32, 40, 30)
+        lay.setContentsMargins(40, 32, 40, 32)
         lay.setSpacing(0)
         lay.addWidget(logo)
         lay.addSpacing(12)
@@ -119,23 +88,11 @@ class SetupDialog(QDialog):
         lay.addWidget(carte_local)
         lay.addSpacing(12)
         lay.addWidget(carte_srv)
-        lay.addSpacing(14)
-        lay.addWidget(self._bloc_srv)
 
     def _choix_local(self):
         self.resultat = {"mode": "local"}
         self.accept()
 
     def _choix_serveur(self):
-        self._bloc_srv.show()
-        self._url.setFocus()
-        self.adjustSize()
-
-    def _valider_serveur(self):
-        url = self._url.text().strip()
-        if not url.startswith(("http://", "https://")):
-            self._erreur.setText("Adresse invalide — exemple : http://serveur:8080")
-            self._erreur.show()
-            return
-        self.resultat = {"mode": "serveur", "url": url}
+        self.resultat = {"mode": "serveur"}
         self.accept()
