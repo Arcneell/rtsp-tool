@@ -14,33 +14,46 @@ from .config import default_config_path, migrer_ancien_dossier
 
 
 def main() -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
     parser = argparse.ArgumentParser(prog="sentinelle",
                                      description="Sentinelle — visionneuse de vidéosurveillance")
     parser.add_argument("--config", "-c", default="",
                         help="chemin du fichier de configuration (défaut : profil utilisateur)")
+    parser.add_argument("--verbose", "-v", action="store_true",
+                        help="journalisation détaillée (niveau DEBUG)")
     args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
     migrer_ancien_dossier()          # reprend les données de l'ancien nom si présent
 
     from PySide6.QtWidgets import QApplication
-    from PySide6.QtCore import qInstallMessageHandler
+    from PySide6.QtCore import qInstallMessageHandler, QtMsgType
 
-    def _filtrer_messages_qt(mode, contexte, message):
-        # Avertissement bénin de Qt/Windows en DPI fractionnaire ou multi-écrans :
-        # Windows rabote la géométrie demandée de quelques pixels, sans effet
-        # visible. Inoffensif mais très bruyant en console — on masque cette
-        # ligne précise ; tout le reste continue de s'afficher.
+    # Route les messages internes de Qt dans le logging Python (mêmes format et
+    # flux que le reste), pour qu'ils restent visibles au débogage.
+    _qt_log = logging.getLogger("qt")
+    _niveaux = {
+        QtMsgType.QtDebugMsg: logging.DEBUG,
+        QtMsgType.QtInfoMsg: logging.INFO,
+        QtMsgType.QtWarningMsg: logging.WARNING,
+        QtMsgType.QtCriticalMsg: logging.ERROR,
+        QtMsgType.QtFatalMsg: logging.CRITICAL,
+    }
+
+    def _handler_qt(mode, contexte, message):
+        niveau = _niveaux.get(mode, logging.INFO)
+        # Avertissement bénin en DPI fractionnaire / multi-écrans : Windows rabote
+        # la géométrie de quelques pixels, sans effet visible. On le rétrograde en
+        # DEBUG (masqué par défaut, réapparaît avec --verbose) au lieu de polluer.
         if "Unable to set geometry" in message:
-            return
-        sys.stderr.write(message + "\n")
+            niveau = logging.DEBUG
+        _qt_log.log(niveau, message)
 
-    qInstallMessageHandler(_filtrer_messages_qt)
+    qInstallMessageHandler(_handler_qt)
 
     app = QApplication(sys.argv)
     app.setApplicationName("Sentinelle")
