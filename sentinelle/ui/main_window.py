@@ -1171,6 +1171,10 @@ class MainWindow(QMainWindow):
         haut = min(self.height(), g.height() - 80)
         self.setGeometry(g.x() + (g.width() - larg) // 2,
                          g.y() + (g.height() - haut) // 2, larg, haut)
+        # associe explicitement la fenêtre à l'écran cible (fiable en multi-DPI)
+        poignee = self.windowHandle()
+        if poignee is not None:
+            poignee.setScreen(ecran)
         self.showFullScreen()
 
     def _toggle_fullscreen(self):

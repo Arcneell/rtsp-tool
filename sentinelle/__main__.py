@@ -29,6 +29,18 @@ def main() -> int:
     migrer_ancien_dossier()          # reprend les données de l'ancien nom si présent
 
     from PySide6.QtWidgets import QApplication
+    from PySide6.QtCore import qInstallMessageHandler
+
+    def _filtrer_messages_qt(mode, contexte, message):
+        # Avertissement bénin de Qt/Windows en DPI fractionnaire ou multi-écrans :
+        # Windows rabote la géométrie demandée de quelques pixels, sans effet
+        # visible. Inoffensif mais très bruyant en console — on masque cette
+        # ligne précise ; tout le reste continue de s'afficher.
+        if "Unable to set geometry" in message:
+            return
+        sys.stderr.write(message + "\n")
+
+    qInstallMessageHandler(_filtrer_messages_qt)
 
     app = QApplication(sys.argv)
     app.setApplicationName("Sentinelle")
