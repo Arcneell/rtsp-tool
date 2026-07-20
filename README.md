@@ -1,102 +1,65 @@
 <p align="center">
-  <img src="packaging/sentinelle.png" alt="Sentinelle" width="128"/>
+  <img src="packaging/sentinelle.png" alt="Sentinelle" width="120"/>
 </p>
 
 <h1 align="center">Sentinelle</h1>
 
-Video-surveillance viewer for RTSP / ONVIF cameras and DVRs, for Windows and
-Linux. Grid and single-camera views, ONVIF motion detection, automatic rotation and
-configurable sequences, with per-camera bandwidth profiles so large grids stay usable
-over slow links.
+<p align="center">
+  <strong>Multi-site video-surveillance viewer for RTSP / ONVIF cameras and DVRs.</strong><br/>
+  Grid & single-camera views, ONVIF motion detection, bandwidth-aware streaming —<br/>
+  standalone, or backed by a central server with user accounts and per-camera access.
+</p>
 
-Works with Hikvision and Dahua natively, several other brands via URL templates, and
-any ONVIF device through auto-discovery.
+<p align="center">
+  <a href="https://github.com/Arcneell/sentinelle/releases"><img src="https://img.shields.io/github/v/release/Arcneell/sentinelle?color=ff7a18&label=release" alt="Release"/></a>
+  <img src="https://img.shields.io/badge/python-3.11%2B-3776ab.svg" alt="Python 3.11+"/>
+  <img src="https://img.shields.io/badge/platforms-Windows%20%7C%20Linux-informational.svg" alt="Platforms"/>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License MIT"/></a>
+</p>
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Python](https://img.shields.io/badge/python-3.11%2B-3776ab.svg)
-![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux-informational.svg)
+---
 
-## Two deployment modes
+Sentinelle turns a workstation into a video wall for RTSP / ONVIF cameras and DVRs. It
+works with **Hikvision** and **Dahua** natively, several other brands via URL templates,
+and any **ONVIF** device through auto-discovery — with per-camera bandwidth profiles so
+large grids stay usable even over slow 4G links.
 
-**Standalone** — the desktop app connects directly to the DVRs. No server, nothing else
-to install; each workstation keeps its own configuration. This is the default mode.
+## Highlights
 
-**With a central server** — a small server (Docker) holds the configuration, the user
-accounts and relays the streams; each workstation logs in with a username and password:
+- 🧱 **Grid (up to 4×4) and single-camera views** — double-click any tile to switch.
+- 🚨 **ONVIF motion detection** — moving tiles are outlined in red, and a *motion view*
+  fills the grid live with only the cameras that are currently active.
+- 📉 **Bandwidth profiles** — pick main/substream/snapshot per view; off-screen cameras
+  hold no connection and nothing is transcoded.
+- 🔭 **Wide device support + network discovery** — scan the LAN, tick cameras, and stream
+  URLs, snapshot URLs and PTZ capability are resolved automatically.
+- 🎮 **PTZ control** and digital zoom, per-tile aspect mode, multi-monitor full screen.
+- 🔁 **Rotation & loops** — ordered sequences of views played on repeat, with an editor.
+- 🖥️ **Optional central server** — shared configuration, user accounts with per-camera
+  access, and a stream relay that pulls each camera **once** regardless of viewer count.
 
-- each camera is pulled **once** from its site regardless of how many viewers are
-  watching (critical for sites behind 4G), and only while someone is watching;
-- DVR credentials **never leave the server** — workstations only get a session token;
-- **user accounts with per-user access**: each account sees only the sites/cameras it
-  was granted; the restriction is enforced server-side *and* at the relay, so it holds
-  even against a tampered client;
-- **admin accounts** get an Administration panel in the app (users, cameras/sites,
-  loops, settings); regular users only get their own preferences;
-- configuration is centralised: add a camera once, every allowed client sees it;
-- ONVIF motion is monitored server-side (one subscription per camera) and pushed to
-  clients over SSE, filtered to their allowed cameras.
+## Deployment modes
 
-The mode is chosen per workstation at first launch and then locked: switching it (or the
-server address) afterwards requires an admin account to sign in on that workstation. See
-[Server](#server-optional) below.
+Choose per workstation at first launch. The mode is then locked — switching it, or the
+server address, requires an admin account to sign in on that workstation.
 
-## Features
+|                         | **Standalone** (default)          | **Central server**                              |
+| ----------------------- | --------------------------------- | ----------------------------------------------- |
+| Extra infrastructure    | none                              | one Docker host (VM / NAS / mini-PC)            |
+| Configuration           | local to each workstation         | centralised — add a camera once, everyone sees it |
+| DVR credentials         | on each workstation               | **never leave the server** (clients get a token) |
+| Access control          | —                                 | per-user sites/cameras, enforced server-side *and* at the relay |
+| Bandwidth to sites      | one pull per viewer               | **one pull per camera**, only while watched (key for 4G) |
+| Admin                   | —                                 | in-app Administration panel (users, cameras, loops) |
 
-- Grid (up to 4×4) and single-camera views; double-click a tile to switch.
-- **ONVIF motion detection**: tiles with motion are outlined in red, and a
-  **"motion view"** automatically fills the grid with the cameras that are moving.
-- Automatic rotation through grid pages or through cameras.
-- Sequences ("loops"): ordered steps (grid or single view + cameras + duration) played
-  on repeat, with a built-in editor.
-- Per-camera bandwidth profiles (see below).
-- **Wide device support**: Hikvision, Dahua, Amcrest, Reolink, Uniview, Axis, Vivotek,
-  Foscam, TP-Link/Tapo via built-in URL templates, plus **ONVIF** for anything else.
-- **ONVIF network discovery**: scan the LAN, pick the cameras, and their stream URLs
-  (main + sub), snapshot URL and PTZ capability are resolved automatically.
-- **PTZ control** for motorised ONVIF cameras (pan/tilt/zoom pad in single view).
-- **Digital zoom** and per-tile aspect mode (fit / crop / stretch); a **"test
-  connection"** button when adding a camera.
-- Whole-DVR import: channels and their names are discovered over the Hikvision ISAPI, or
-  listed manually for other brands.
-- Reconnection with exponential backoff; retries stop on authentication failure to avoid
-  locking the DVR account.
-- Snapshot capture, per-tile and total bitrate, multi-monitor full screen, and a
-  dark interface tuned for a video wall.
-- Configured entirely in the UI. Passwords are not shown again once set and are
-  obfuscated on disk.
+See [Server](#central-server) below for deployment.
 
-## Motion detection (ONVIF)
+## Quick start
 
-Toggle **Mouvement** to subscribe to each camera's ONVIF event stream (PullPoint). When
-a camera reports motion, its tile is outlined in red. Toggle **Vue mouvement** and the
-grid stops showing your manual selection and instead shows, live, only the cameras that
-are currently moving — a hands-off wall that surfaces activity across every site.
-
-Requires ONVIF (and its motion rule) to be enabled on the device; a camera without an
-event service is simply skipped. Motion clears on the camera's "off" event or after a
-few seconds without a new one.
-
-## Bandwidth profiles
-
-Only the stream requested from the DVR determines the bitrate — there is no transcoding,
-and an off-screen camera holds no connection.
-
-| Profile | Grid | Single |
-|---------|------|--------|
-| Normal | substream | mainstream (HD) |
-| Eco | substream | substream |
-| Extreme eco | JPEG snapshot every N seconds | substream |
-
-Rotation and sequences close the current streams before opening the next ones. RTSP runs
-over TCP. Substreams are rendered with mpv's `ewa_lanczossharp` scaler so they stay
-readable when enlarged — no extra processing, no external dependencies.
-
-## Install
-
-Requires Python 3.11+ and libmpv.
+Requires **Python 3.11+** and **libmpv**.
 
 - Windows: put `libmpv-2.dll` in a `lib/` folder at the project root.
-- Debian/Ubuntu: `sudo apt install libmpv2`. Fedora: `sudo dnf install mpv-libs`.
+- Debian/Ubuntu: `sudo apt install libmpv2` — Fedora: `sudo dnf install mpv-libs`.
 - Optional: `ffprobe` (from `ffmpeg`) improves failure diagnostics.
 
 ```bash
@@ -106,80 +69,111 @@ python run.py
 
 The Configuration window opens on first run.
 
+> **Prefer a package?** Pre-built Linux `.deb` files are attached to every
+> [release](https://github.com/Arcneell/sentinelle/releases):
+> `sudo apt install ./sentinelle_2.0.0_amd64.deb` (pulls `libmpv2` automatically).
+
 ## Configuration
 
-Managed in the UI: add a site (fiber or 4G), add a DVR (address and credentials, then
-channel discovery or a manual list), then tick the cameras to display.
+Managed entirely in the UI: add a site (fiber or 4G), add a DVR (address and
+credentials, then channel discovery or a manual list), then tick the cameras to display.
 
-Stored at `%APPDATA%\Sentinelle\config.yaml` (Windows) or `~/.config/sentinelle/config.yaml`
-(Linux). A `config.yaml` next to the executable takes priority.
+Stored at `%APPDATA%\Sentinelle\config.yaml` (Windows) or
+`~/.config/sentinelle/config.yaml` (Linux); a `config.yaml` next to the executable takes
+priority. Passwords are obfuscated in the file, not encrypted — the key ships with the
+app, so this only prevents casual reading. **Use a read-only DVR account.**
 
-Passwords are obfuscated in the file, not encrypted — the key ships with the app, so this
-only prevents casual reading. Use a read-only DVR account.
+## Features in detail
 
-## Server (optional)
+### Motion detection (ONVIF)
+
+Toggle **Mouvement** to subscribe to each camera's ONVIF event stream (PullPoint). When a
+camera reports motion, its tile is outlined in red. Toggle **Vue mouvement** and the grid
+stops showing your manual selection and instead shows, live, only the cameras currently
+moving — a hands-off wall that surfaces activity across every site.
+
+Requires ONVIF (and its motion rule) enabled on the device; a camera without an event
+service is simply skipped. Motion clears on the camera's "off" event, or after a few
+seconds without a new one.
+
+### Bandwidth profiles
+
+Only the stream requested from the DVR determines the bitrate — there is no transcoding,
+and an off-screen camera holds no connection.
+
+| Profile     | Grid                           | Single           |
+| ----------- | ------------------------------ | ---------------- |
+| Normal      | substream                      | mainstream (HD)  |
+| Eco         | substream                      | substream        |
+| Extreme eco | JPEG snapshot every N seconds  | substream        |
+
+Rotation and loops close the current streams before opening the next. RTSP runs over TCP.
+Substreams are rendered with mpv's `ewa_lanczossharp` scaler so they stay readable when
+enlarged — no extra processing, no external dependencies.
+
+### Device support
+
+Hikvision, Dahua, Amcrest, Reolink, Uniview, Axis, Vivotek, Foscam and TP-Link/Tapo via
+built-in URL templates, plus **ONVIF** for anything else. ONVIF network discovery scans
+the LAN and resolves each camera's stream URLs (main + sub), snapshot URL and PTZ
+capability. Whole-DVR import discovers channels and their names over the Hikvision ISAPI,
+or lists them manually for other brands.
+
+Reconnection uses exponential backoff, and retries stop on an authentication failure to
+avoid locking the DVR account.
+
+## Central server
 
 The server is two containers: a FastAPI control plane and a
-[MediaMTX](https://github.com/bluenviron/mediamtx) stream relay. Streams are proxied
-**on demand** with no re-encoding (H.264 passthrough), so CPU usage stays negligible.
+[MediaMTX](https://github.com/bluenviron/mediamtx) stream relay. Streams are proxied **on
+demand** with no re-encoding (H.264 passthrough), so CPU usage stays negligible.
 
-Deploy it on a Linux machine that can reach the DVRs and is reachable by the
-workstations (a small VM, a NAS, a mini-PC). Prerequisites: Docker with the Compose
-plugin (`sudo apt install docker.io docker-compose-v2` on Debian/Ubuntu). Then, from a
-clone of this repository:
+Deploy it on a Linux machine that can reach the DVRs and is reachable by the workstations.
+Prerequisites: Docker with the Compose plugin
+(`sudo apt install docker.io docker-compose-v2` on Debian/Ubuntu). Then, from a clone of
+this repository:
 
 ```bash
 cd deploy
 docker compose up -d --build     # builds the API image and starts both containers
 ```
 
-- On first start an **admin** account is created; its initial password is printed in
-  the API logs (`docker compose logs api`) and written to `deploy/data/admin-initial.txt`.
-  Log in with it, then change it (*Configuration → Mon compte*) and delete that file.
+- On first start an **admin** account is created; its initial password is printed in the
+  API logs (`docker compose logs api`) and written to `deploy/data/admin-initial.txt`. Log
+  in with it, change it (*Configuration → Mon compte*), then delete that file.
 - To bootstrap from an existing standalone installation, copy its `config.yaml` into
   `deploy/data/` before the first start — same file format.
 - Manage everything from the app while logged in as admin → **Administration**: create
-  user accounts, grant each one whole sites or individual cameras, edit cameras/sites,
-  loops and settings.
-- Exposed ports: `8080/tcp` (API: login, config, snapshots, PTZ, motion events over
-  SSE, relay authorization) and `8554/tcp` (RTSP relay). The MediaMTX control port stays
-  inside the Docker network.
+  users, grant each whole sites or individual cameras, edit cameras/sites, loops, settings.
 - On each workstation: *Configuration → Connexion* → mode **Serveur central** and the
-  server URL (`http://server:8080`), then log in. "Rester connecté" stores the
-  credentials for unattended restart (use a dedicated viewer account on wall displays).
+  server URL (`http://server:8080`), then log in. "Rester connecté" stores the credentials
+  for unattended restart (use a dedicated viewer account on wall displays).
+- **Ports**: `8080/tcp` (API — login, config, snapshots, PTZ, motion over SSE, relay
+  auth) and `8554/tcp` (RTSP relay). The MediaMTX control port stays inside the Docker
+  network.
+- **Update**: `git pull && docker compose up -d --build`. After editing
+  `deploy/mediamtx.yml`, recreate the relay so it reloads: `docker compose up -d
+  --force-recreate mediamtx`.
 
-Security model: passwords are hashed with PBKDF2 (never stored or sent in clear);
+**Security model.** Passwords are hashed with PBKDF2 (never stored or sent in clear);
 sessions are stateless signed tokens that a password change immediately invalidates;
 per-user camera access is enforced both in the API and at the relay (MediaMTX external
 HTTP authorization calls back into the API for every read); DVR credentials live only on
 the server. The API speaks plain HTTP — deploy it on a trusted network (VPN) or behind a
-TLS reverse proxy (Caddy/nginx). `deploy/data/` holds all secrets and is gitignored.
+TLS reverse proxy (Caddy / nginx). `deploy/data/` holds all secrets and is gitignored.
 
-> Note: after editing `deploy/mediamtx.yml`, recreate the relay so it reloads its
-> config: `docker compose up -d --force-recreate mediamtx`.
+## Building packages
 
-## Packaging (client app)
-
-Pre-built Linux packages are attached to each [release](../../releases):
+Pre-built Linux packages are attached to each
+[release](https://github.com/Arcneell/sentinelle/releases). To build them yourself:
 
 ```bash
-sudo apt install ./sentinelle_2.0.0_amd64.deb   # pulls libmpv2 automatically
-```
-
-Then launch **Sentinelle** from the applications menu, or the `sentinelle` command.
-Compatible with Debian 12+ / Ubuntu 24.04+. Under Wayland, if tiles stay black:
-`QT_QPA_PLATFORM=xcb sentinelle`.
-
-Build the `.deb` yourself (works from Windows too, via Docker) — produces
-`dist/sentinelle_<version>_amd64.deb` with icon and menu entry:
-
-```bash
+# Linux .deb (works from Windows too, via Docker) -> dist/sentinelle_<version>_amd64.deb
 docker run --rm -v "${PWD}:/src" -w /src debian:12 bash packaging/build_deb.sh
 ```
 
-Windows executable (PyInstaller):
-
 ```powershell
+# Windows executable (PyInstaller)
 pip install pyinstaller
 pyinstaller --noconfirm --windowed --name Sentinelle --icon packaging/sentinelle.ico `
     --add-binary "lib\libmpv-2.dll;." `
@@ -187,53 +181,44 @@ pyinstaller --noconfirm --windowed --name Sentinelle --icon packaging/sentinelle
     --add-data "sentinelle\ui\sentinelle.png;sentinelle/ui" run.py
 ```
 
+Installed `.deb`: launch **Sentinelle** from the applications menu or the `sentinelle`
+command (Debian 12+ / Ubuntu 24.04+). Under Wayland, if tiles stay black:
+`QT_QPA_PLATFORM=xcb sentinelle`.
+
 ## Architecture
 
 ```
-sentinelle/
-├── config.py             Data model, brand URL templates, config.yaml read/write
-├── probe.py              RTSP failure classification (auth / timeout / network)
-├── snapshot.py           JPEG snapshots (ISAPI/CGI) and Hikvision channel discovery
-├── onvif.py              ONVIF: WS-Discovery, stream/snapshot URIs, PTZ, motion events
-├── motion.py             ONVIF motion monitor (per-camera event subscription threads)
-├── player.py             libmpv loading, RTSP settings, upscaling
-├── remote.py             Server mode: API client, session login, SSE motion listener
-└── ui/
-    ├── theme.py          Dark theme palette + global flat stylesheet
-    ├── main_window.py    Title bar, camera sidebar, grid/single views, rotation, loops, motion
-    ├── tile.py           Video tile: state machine, backoff, stop on 401, zoom, PTZ
-    ├── photo_tile.py     Photo-mode tile (extreme-eco profile)
-    ├── config_dialogs.py Camera manager, standalone config, server preferences
-    ├── login_dialog.py   Server login
-    ├── admin_dialog.py   Admin panel: users + permissions, cameras, loops, settings
-    ├── sequence_editor.py Loop editor
-    └── icons.py          SVG icons
-sentinelle_server/
-├── app.py                FastAPI API: login, config, snapshots, PTZ, SSE, relay-auth
-├── auth.py               User accounts, PBKDF2 hashing, signed tokens, permissions
-├── store.py              Central config (same YAML format) + secret/bootstrap admin
-├── relay.py              MediaMTX orchestration (one on-demand path per stream)
-└── motion.py             Server-side ONVIF motion monitor + event hub
-deploy/                   docker-compose.yml, Dockerfile.server, mediamtx.yml
-packaging/                .deb build script, icon generation
+sentinelle/                  Desktop client (PySide6 / Qt 6)
+├── config.py                Data model, brand URL templates, config.yaml read/write
+├── probe.py                 RTSP failure classification (auth / timeout / network)
+├── snapshot.py              JPEG snapshots (ISAPI/CGI) and Hikvision channel discovery
+├── onvif.py                 ONVIF: WS-Discovery, stream/snapshot URIs, PTZ, motion events
+├── motion.py                ONVIF motion monitor (per-camera event subscription threads)
+├── player.py                libmpv loading, RTSP settings, upscaling
+├── remote.py                Server mode: API client, session login, SSE motion listener
+└── ui/                      Title bar, sidebar, grid/single views, tiles, dialogs, theme
+sentinelle_server/           Server (no Qt dependency)
+├── app.py                   FastAPI API: login, config, snapshots, PTZ, SSE, relay-auth
+├── auth.py                  User accounts, PBKDF2 hashing, signed tokens, permissions
+├── store.py                 Central config (same YAML format) + secret/bootstrap admin
+├── relay.py                 MediaMTX orchestration (one on-demand path per stream)
+└── motion.py                Server-side ONVIF motion monitor + event hub
+deploy/                      docker-compose.yml, Dockerfile.server, mediamtx.yml
+packaging/                   .deb build script, icon generation
 ```
 
 ONVIF is implemented directly over SOAP/HTTP (WS-UsernameToken digest auth) — no
-`zeep`/`onvif-zeep` dependency. Network discovery uses WS-Discovery multicast, which
-does not cross VLAN/VPN boundaries; cameras on routed subnets are added by direct IP
-instead (the ONVIF client resolves their stream URLs the same way).
-
-Each tile runs its own libmpv instance on a separate thread, so a failing stream does not
-affect the others. On an authentication failure the tile stops retrying: rotation and
-loops re-open streams constantly, and a wrong password retried in a loop would lock the
-DVR account.
+`zeep`/`onvif-zeep` dependency. Network discovery uses WS-Discovery multicast, which does
+not cross VLAN/VPN boundaries; cameras on routed subnets are added by direct IP instead.
+Each tile runs its own libmpv instance on a separate thread, so a failing stream never
+affects the others.
 
 ## Tech stack
 
-Client: Python 3.11+, [PySide6](https://doc.qt.io/qtforpython/) (Qt 6),
+**Client** — Python 3.11+, [PySide6](https://doc.qt.io/qtforpython/) (Qt 6),
 [python-mpv](https://github.com/jaseg/python-mpv), PyYAML, requests.
-Server: FastAPI + uvicorn, [MediaMTX](https://github.com/bluenviron/mediamtx) (Docker).
+**Server** — FastAPI + uvicorn, [MediaMTX](https://github.com/bluenviron/mediamtx) (Docker).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Released under the [MIT License](LICENSE).
