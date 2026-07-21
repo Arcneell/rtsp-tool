@@ -39,13 +39,16 @@ cp -r /tmp/dist/sentinelle/. "$ROOT/opt/sentinelle/"
 cp packaging/sentinelle.png "$ROOT/usr/share/icons/hicolor/256x256/apps/sentinelle.png"
 cp packaging/sentinelle.svg "$ROOT/usr/share/icons/hicolor/scalable/apps/sentinelle.svg"
 
+# libxcb-cursor0 : requise par le plugin Qt « xcb » (Qt 6.5+), non embarquée
+# par PySide6 et absente d'un Debian GNOME (Wayland) frais — sans elle,
+# l'application se replierait en Wayland natif et les tuiles resteraient noires.
 cat > "$ROOT/DEBIAN/control" <<EOF
 Package: sentinelle
 Version: ${VERSION}
 Section: video
 Priority: optional
 Architecture: ${ARCH}
-Depends: libmpv2 | libmpv1
+Depends: libmpv2 | libmpv1, libxcb-cursor0
 Recommends: ffmpeg
 Maintainer: Sentinelle <sentinelle@example.com>
 Description: Visionneuse de videosurveillance multi-sites (RTSP, ONVIF)

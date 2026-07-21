@@ -30,6 +30,7 @@ class MotionMonitor(QObject):
         super().__init__(parent)
         self._threads = {}                  # camera_id -> thread
         self._stop = {}                     # camera_id -> Event
+        self._ident = {}                    # camera_id -> empreinte (hote/user/mdp/port)
         self._actifs = {}                   # camera_id -> timestamp du dernier « actif »
         self._lock = threading.Lock()
         self._retombee = QTimer(self)
@@ -42,15 +43,22 @@ class MotionMonitor(QObject):
 
     # ------------------------------------------------------------- cycle de vie
 
+    @staticmethod
+    def _empreinte(cam) -> tuple:
+        # relancer le thread si l'adresse/les identifiants changent (sinon on
+        # interroge l'ancien hôte, avec un risque de lockout du compte DVR)
+        return (cam.hote, cam.user, cam.password, cam.port_http)
+
     def surveiller(self, cameras: list):
         """(Re)définit la liste des caméras surveillées."""
         voulus = {c.id: c for c in cameras if c.hote and c.user}
         for cam_id in list(self._threads):
-            if cam_id not in voulus:
+            if cam_id not in voulus or self._ident.get(cam_id) != self._empreinte(voulus[cam_id]):
                 self._arreter_cam(cam_id)
         for cam_id, cam in voulus.items():
             if cam_id not in self._threads:
                 self._demarrer_cam(cam)
+                self._ident[cam_id] = self._empreinte(cam)
         if self._threads and not self._retombee.isActive():
             self._retombee.start()
 
@@ -74,6 +82,7 @@ class MotionMonitor(QObject):
         if ev:
             ev.set()
         self._threads.pop(cam_id, None)
+        self._ident.pop(cam_id, None)
         self._signaler(cam_id, False)
 
     # ---------------------------------------------------------------- interne

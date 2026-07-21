@@ -7,14 +7,19 @@ on:
     branches: [ main ]
 
 jobs:
-  test:
+  tests:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 = plancher annoncé (README) ; 3.14 = image du serveur (Docker)
+        python-version: ["3.11", "3.12", "3.14"]
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "${{ matrix.python-version }}"
 
       - name: Dépendances système (Qt en mode hors-écran)
         run: |
@@ -25,7 +30,12 @@ jobs:
       - name: Dépendances Python
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-server.txt pytest httpx
+          pip install -r requirements.txt -r requirements-server.txt pytest httpx ruff
+
+      - name: Lint (erreurs réelles uniquement)
+        # ne bloque que sur les vraies erreurs (syntaxe, noms indéfinis, f-strings
+        # cassées…) — pas sur le style, pour ne pas être bruyant.
+        run: ruff check --select E9,F63,F7,F82 sentinelle sentinelle_server run.py
 
       - name: Compilation (syntaxe)
         run: python -m compileall sentinelle sentinelle_server run.py
@@ -34,3 +44,15 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: pytest -q
+
+  # Agrégateur : c'est LE check requis par la protection de branche (contexte
+  # « test », aussi attendu par l'auto-merge Dependabot). Il n'est vert que si
+  # toute la matrice l'est ; `if: always()` l'empêche d'être « skipped » quand
+  # la matrice échoue (un check requis sauté passerait pour réussi).
+  test:
+    needs: tests
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Vérifie que la matrice est verte
+        run: test "${{ needs.tests.result }}" = "success"

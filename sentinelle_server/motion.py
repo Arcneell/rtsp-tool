@@ -64,16 +64,24 @@ class MotionMonitor:
         self._on_change = on_change            # callable(cam_id, actif)
         self._threads: dict[str, threading.Thread] = {}
         self._stops: dict[str, threading.Event] = {}
+        self._ident: dict[str, tuple] = {}     # cam_id -> empreinte (hote/user/mdp/port)
         self._actifs: dict[str, float] = {}    # cam_id -> dernier « actif »
         self._lock = threading.Lock()
         self._checker: threading.Thread | None = None
         self._fini = threading.Event()
 
+    @staticmethod
+    def _empreinte(cam) -> tuple:
+        # une caméra dont l'adresse ou les identifiants changent doit voir son
+        # thread relancé : sinon on continue d'interroger l'ancien hôte (et des
+        # échecs d'auth répétés peuvent verrouiller le compte DVR)
+        return (cam.hote, cam.user, cam.password, cam.port_http)
+
     def surveiller(self, cameras: list):
         """(Re)définit la liste des caméras surveillées."""
         voulus = {c.id: c for c in cameras if c.hote and c.user}
         for cam_id in list(self._threads):
-            if cam_id not in voulus:
+            if cam_id not in voulus or self._ident.get(cam_id) != self._empreinte(voulus[cam_id]):
                 self._arreter_cam(cam_id)
         for cam_id, cam in voulus.items():
             if cam_id not in self._threads:
@@ -82,6 +90,7 @@ class MotionMonitor:
                                       daemon=True, name=f"motion-{cam_id}")
                 self._threads[cam_id] = th
                 self._stops[cam_id] = ev
+                self._ident[cam_id] = self._empreinte(cam)
                 th.start()
         if self._threads and self._checker is None:
             self._checker = threading.Thread(target=self._verifier_retombee,
@@ -100,6 +109,7 @@ class MotionMonitor:
         if ev:
             ev.set()
         self._threads.pop(cam_id, None)
+        self._ident.pop(cam_id, None)
         with self._lock:
             self._actifs.pop(cam_id, None)
         self._on_change(cam_id, False)
