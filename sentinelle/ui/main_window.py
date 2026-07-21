@@ -10,8 +10,9 @@ Règles bande passante appliquées ici :
 
 import logging
 import math
+import threading
 
-from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (QComboBox, QFrame, QGridLayout, QHBoxLayout,
                                QLabel, QMainWindow, QMenu, QMessageBox,
@@ -19,7 +20,7 @@ from PySide6.QtWidgets import (QComboBox, QFrame, QGridLayout, QHBoxLayout,
                                QToolButton, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
-from .. import APP_NAME, __version__
+from .. import APP_NAME
 from ..config import (AppConfig, load_config, purger_cameras_sequences,
                       save_config)
 from .config_dialogs import CameraDialog, ConfigDialog, DvrDialog, SiteDialog
@@ -35,6 +36,10 @@ CAP_CHOICES = [("Auto (16 max)", 16), ("1×1", 1), ("2×2", 4), ("3×3", 9), ("4
 
 class MainWindow(QMainWindow):
 
+    # résultat du contrôle de session exécuté en arrière-plan :
+    # "ok" | "reconnecte" | "interactif" | "erreur"
+    _session_resultat = Signal(str)
+
     def __init__(self, config_path: str):
         super().__init__()
         self._config_path = config_path             # config locale (mode autonome)
@@ -48,6 +53,7 @@ class MainWindow(QMainWindow):
         self._motion = None                         # moniteur local ou écouteur serveur
         self._motion_ids = set()                    # caméras actuellement en mouvement
         self._icon_widgets = []                     # (widget, nom_icone) à recolorer
+        self._session_verif_en_cours = False        # un contrôle de session est en vol
         from ..reglages import reglages
         self._settings = reglages()
         self._remote = self._creer_remote()         # None = mode autonome
@@ -94,12 +100,24 @@ class MainWindow(QMainWindow):
                 pass
         # connexion interactive ; l'adresse est saisissable seulement si elle
         # n'est pas encore connue (premier paramétrage du poste)
+        from PySide6.QtWidgets import QApplication
         from .login_dialog import LoginDialog
         dlg = LoginDialog(self._remote.base, user, self,
                           url_editable=not self._remote.base)
-        if not dlg.exec() or dlg.remote is None:
+        # pendant que la fenêtre principale est masquée (déconnexion), empêcher
+        # que la fermeture de la page de login fasse quitter l'application
+        app = QApplication.instance()
+        prev = app.quitOnLastWindowClosed() if app else True
+        if app:
+            app.setQuitOnLastWindowClosed(False)
+        try:
+            accepte = bool(dlg.exec()) and dlg.remote is not None
+        finally:
+            if app:
+                app.setQuitOnLastWindowClosed(prev)
+        if not accepte:
             return False
-        self._remote = dlg.remote
+        self._remplacer_remote(dlg.remote)
         infos = dlg.infos()
         self._settings.setValue("serveur_url", infos["url"])
         if infos["memoriser"]:
@@ -109,6 +127,90 @@ class MainWindow(QMainWindow):
             self._settings.remove("serveur_user")
             self._settings.remove("serveur_pass")
         return True
+
+    def _remplacer_remote(self, nouveau):
+        """Remplace l'objet de session serveur. L'écouteur de mouvement garde une
+        référence sur l'ancien objet (jeton mort) : on le défait ici — il sera
+        recréé avec la nouvelle session par _load_config si la détection est
+        active."""
+        self._remote = nouveau
+        if self._motion is not None:
+            self._motion.stop()
+            self._motion = None
+
+    def _maj_session_timer(self):
+        """Active la surveillance de session en mode serveur uniquement."""
+        if self._remote is not None:
+            if not self._session_timer.isActive():
+                self._session_timer.start()
+        else:
+            self._session_timer.stop()
+
+    def _verifier_session(self):
+        """Contrôle périodique de la session serveur, exécuté HORS du thread UI
+        (un serveur injoignable gèlerait sinon l'interface à chaque tick).
+
+        Dans le thread : interroge /api/session et, si le jeton est mort ou
+        expire dans moins d'un jour, retente un login avec les identifiants
+        mémorisés (le jeton est rafraîchi en place sur l'objet partagé). Le
+        résultat revient sur le thread Qt via _session_resultat."""
+        if (self._remote is None or not self._remote.connecte
+                or self._session_verif_en_cours):
+            return
+        from ..config import desobfusquer
+        self._session_verif_en_cours = True
+        remote = self._remote
+        self._session_remote = remote           # sur quel objet ce contrôle porte
+        user = self._settings.value("serveur_user", "", type=str)
+        mdp = desobfusquer(self._settings.value("serveur_pass", "", type=str))
+
+        def work():
+            from ..remote import ErreurServeur, JetonInvalide
+            res = "erreur"                       # défaut sûr : au pire on retentera
+            try:
+                try:
+                    reste = remote.session_reste()
+                except JetonInvalide:
+                    reste = 0                    # jeton mort : rafraîchir tout de suite
+                if reste is None or reste >= 86400:
+                    res = "ok"
+                elif user and mdp:
+                    try:
+                        remote.login(user, mdp)  # rafraîchit remote.jeton en place
+                        res = "reconnecte"
+                    except JetonInvalide:
+                        # identifiants mémorisés devenus faux : session à refaire
+                        res = "interactif" if reste <= 0 else "ok"
+                    except ErreurServeur:
+                        res = "erreur"
+                else:
+                    res = "interactif" if reste <= 0 else "ok"
+            except ErreurServeur:
+                res = "erreur"                   # réseau : on retentera au prochain tick
+            except Exception:
+                # jamais laisser le thread mourir sans émettre : sinon le drapeau
+                # _session_verif_en_cours resterait bloqué et le contrôle de
+                # session ne repartirait plus jamais.
+                logger.exception("Contrôle de session : erreur inattendue")
+            try:
+                self._session_resultat.emit(res)
+            except RuntimeError:
+                pass                             # fenêtre détruite entre-temps
+        threading.Thread(target=work, daemon=True, name="session-check").start()
+
+    def _on_session_resultat(self, res: str):
+        self._session_verif_en_cours = False
+        # la session a pu changer pendant le contrôle (déconnexion, bascule de
+        # mode, autre serveur) : dans ce cas le résultat ne la concerne plus
+        if self._remote is None or self._remote is not getattr(self, "_session_remote", None):
+            return
+        if res == "reconnecte":
+            # nouveau jeton : recharger pour régénérer les URLs de flux/snapshot
+            self._load_config()
+        elif res == "interactif":
+            self._remote.jeton = ""
+            if self._assurer_session():
+                self._load_config()
 
     def _deconnecter(self):
         """Ferme l'interface principale et rouvre la page de connexion. Une
@@ -448,6 +550,14 @@ class MainWindow(QMainWindow):
         self._save_timer.setInterval(1200)
         self._save_timer.timeout.connect(lambda: save_config(self._cfg))
 
+        # vérification périodique de la session serveur : détecte un jeton
+        # expiré/révoqué (reconnexion) et rafraîchit un jeton bientôt périmé pour
+        # que les murs d'images restent connectés sans intervention
+        self._session_timer = QTimer(self)
+        self._session_timer.setInterval(15 * 60 * 1000)
+        self._session_timer.timeout.connect(self._verifier_session)
+        self._session_resultat.connect(self._on_session_resultat)
+
     def _tbtn(self, nom_icone: str, texte: str, tooltip: str, slot,
               checkable: bool = False) -> QToolButton:
         """Bouton plat de la barre de titre (icône + texte)."""
@@ -548,6 +658,14 @@ class MainWindow(QMainWindow):
         self._maj_visibilite_mouvement()
         self._selection_appliquee()
 
+        # si la détection est demandée, (re)créer le moniteur au besoin — il a pu
+        # être défait lors d'un changement de session — puis réaligner la liste
+        # surveillée (caméras ajoutées/retirées, identifiants modifiés)
+        if self._act_motion.isChecked():
+            self._motion_assurer()
+            self._motion.surveiller(list(self._cfg.cameras))
+        self._maj_session_timer()
+
         if cfg.warnings:
             QMessageBox.warning(
                 self, "Configuration — avertissements",
@@ -614,7 +732,7 @@ class MainWindow(QMainWindow):
         else:
             self._settings.remove("serveur_user")
             self._settings.remove("serveur_pass")
-        self._remote = dlg.remote
+        self._remplacer_remote(dlg.remote)
         self._maj_bouton_admin()
         self._load_config()
 
@@ -1237,6 +1355,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         self._seq_timer.stop()
         self._rotation_timer.stop()
+        self._session_timer.stop()
         if self._motion is not None:
             self._motion.stop()
         if self._save_timer.isActive():

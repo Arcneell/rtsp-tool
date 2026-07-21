@@ -248,6 +248,10 @@ class PhotoTile(QFrame):
             return
         from .tile import snapshot_path
         path = snapshot_path(self.camera)
-        with open(path, "wb") as f:
-            f.write(self._last_bytes)
+        try:
+            with open(path, "wb") as f:
+                f.write(self._last_bytes)
+        except OSError as e:
+            logger.warning(f"[{self.camera.id}] enregistrement image impossible : {e}")
+            return
         self.snapshot_saved.emit(path)

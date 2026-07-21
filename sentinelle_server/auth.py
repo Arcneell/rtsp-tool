@@ -3,9 +3,11 @@
 Sécurité :
   - mots de passe hachés en PBKDF2-HMAC-SHA256 (sel aléatoire par compte),
     jamais stockés ni renvoyés en clair ;
-  - jeton de session = username signé (HMAC-SHA256) avec une clé serveur ET
-    l'empreinte du mot de passe : changer le mot de passe invalide aussitôt
-    toutes les sessions existantes, sans stockage de session ;
+  - jeton de session = username + expiration, signé (HMAC-SHA256) avec une clé
+    serveur ET l'empreinte du mot de passe : changer le mot de passe invalide
+    aussitôt toutes les sessions existantes, et un jeton volé cesse d'être
+    valable après SENTINELLE_TOKEN_TTL_H heures — le tout sans stockage de
+    session côté serveur ;
   - droits par utilisateur : rôle (admin | user), accès à tout ou à une liste
     de sites / caméras. Le rôle admin donne la gestion + la visibilité totale.
 
@@ -19,12 +21,25 @@ import logging
 import os
 import secrets
 import threading
+import time
 
 import yaml
 
 logger = logging.getLogger(__name__)
 
 _ITERATIONS = 200_000
+
+# Longueur minimale imposée à tout nouveau mot de passe (login + admin).
+MIN_MDP = 8
+
+
+def _ttl_s() -> int:
+    """Durée de vie d'un jeton, en secondes (défaut : 7 jours)."""
+    try:
+        h = int(os.environ.get("SENTINELLE_TOKEN_TTL_H", "168"))
+    except (TypeError, ValueError):
+        h = 168
+    return max(1, h) * 3600
 
 
 def hacher(mot_de_passe: str, sel: bytes | None = None) -> tuple[str, str]:
@@ -135,28 +150,45 @@ class Users:
         return mdp
 
     # ------------------------------------------------------------------- jetons
+    #
+    # Format : b64(username).exp.signature  où exp est un horodatage Unix et la
+    # signature couvre username + empreinte du mot de passe + exp. Changer le
+    # mot de passe (hash) OU dépasser exp rend le jeton invalide.
 
-    def _signature(self, user: User) -> str:
-        msg = f"{user.username}:{user.hash}".encode()
+    def _signature(self, user: User, exp: int) -> str:
+        msg = f"{user.username}:{user.hash}:{exp}".encode()
         return _b64(hmac.new(self.secret, msg, hashlib.sha256).digest())
 
     def emettre_jeton(self, user: User) -> str:
-        return _b64(user.username.encode()) + "." + self._signature(user)
+        exp = int(time.time()) + _ttl_s()
+        return f"{_b64(user.username.encode())}.{exp}.{self._signature(user, exp)}"
 
     def user_du_jeton(self, jeton: str) -> User | None:
-        if not jeton or "." not in jeton:
+        if not jeton or jeton.count(".") != 2:
             return None
-        nom_b64, sig = jeton.split(".", 1)
+        nom_b64, exp_s, sig = jeton.split(".", 2)
         try:
             username = _unb64(nom_b64).decode("utf-8")
+            exp = int(exp_s)
         except Exception:
             return None
+        if exp < time.time():
+            return None                         # jeton expiré
         user = self.users.get(username)
         if user is None:
             return None
-        if not hmac.compare_digest(sig, self._signature(user)):
+        if not hmac.compare_digest(sig, self._signature(user, exp)):
             return None
         return user
+
+    def reste_jeton(self, jeton: str) -> int:
+        """Secondes restant avant expiration (0 si absent/illisible). Ne
+        revérifie pas la signature : à n'appeler qu'après user_du_jeton."""
+        try:
+            exp = int(jeton.split(".", 2)[1])
+        except (IndexError, ValueError):
+            return 0
+        return max(0, exp - int(time.time()))
 
     # ------------------------------------------------------------------- login
 
@@ -204,12 +236,18 @@ class Users:
             role = str(e.get("role", "user"))
             ancien = self.users.get(nom)
             mdp = e.get("password") or ""
+            if mdp and len(mdp) < MIN_MDP:
+                # ne jamais enregistrer un mot de passe faible : on conserve
+                # l'ancien s'il existe, sinon on ignore le compte
+                avertissements.append(
+                    f"'{nom}' : mot de passe trop court (min {MIN_MDP}) — non modifié")
+                mdp = ""
             if mdp:
                 sel, h = hacher(mdp)
             elif ancien is not None:
                 sel, h = ancien.sel, ancien.hash
             else:
-                avertissements.append(f"'{nom}' sans mot de passe ignoré")
+                avertissements.append(f"'{nom}' sans mot de passe (valide) ignoré")
                 continue
             nouveaux[nom] = User(
                 username=nom, role=role, sel=sel, hash=h,

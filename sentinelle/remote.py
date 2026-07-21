@@ -70,12 +70,25 @@ class ServeurDistant:
         if r.status_code == 401:
             raise JetonInvalide("identifiant ou mot de passe incorrect")
         if r.status_code >= 400:
-            raise ErreurServeur(f"HTTP {r.status_code}")
+            detail = ""
+            try:
+                detail = r.json().get("detail", "")
+            except Exception:
+                pass
+            # ex. 429 : « trop de tentatives — réessayez dans Ns »
+            raise ErreurServeur(detail or f"HTTP {r.status_code}")
         data = r.json()
         self.jeton = data.get("token", "")
         self.username = data.get("username", username)
         self.role = data.get("role", "user")
         return data
+
+    def session_reste(self) -> int | None:
+        """Secondes restant avant expiration du jeton (None si non fourni).
+        Lève JetonInvalide si la session n'est plus valable."""
+        data = self._req("GET", "/api/session").json()
+        reste = data.get("reste_s")
+        return int(reste) if reste is not None else None
 
     def changer_mot_de_passe(self, ancien: str, nouveau: str):
         data = self._req("POST", "/api/account/password",
@@ -201,7 +214,6 @@ class ServeurDistant:
 
     def pousser(self, cfg: AppConfig) -> list[str]:
         """Envoie la configuration complète au serveur. Retourne ses warnings."""
-        from .config import obfusquer
         data = {
             "options": {"rotation_duree_s": cfg.rotation_duree_s},
             "sites": [{"id": s.id, "nom": s.nom, "lien": s.lien} for s in cfg.sites],

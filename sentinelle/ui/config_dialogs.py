@@ -1000,9 +1000,9 @@ class PreferencesDialog(QDialog):
         from ..remote import ErreurServeur
         ancien = self._mdp_ancien.text()
         nouveau = self._mdp_nouv.text()
-        if len(nouveau) < 4:
+        if len(nouveau) < 8:                 # même minimum que le serveur (MIN_MDP)
             QMessageBox.warning(self, "Mot de passe",
-                                "Le nouveau mot de passe doit faire au moins 4 caractères.")
+                                "Le nouveau mot de passe doit faire au moins 8 caractères.")
             return
         if nouveau != self._mdp_conf.text():
             QMessageBox.warning(self, "Mot de passe", "La confirmation ne correspond pas.")

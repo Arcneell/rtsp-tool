@@ -59,7 +59,8 @@ See [Server](#central-server) below for deployment.
 Requires **Python 3.11+** and **libmpv**.
 
 - Windows: put `libmpv-2.dll` in a `lib/` folder at the project root.
-- Debian/Ubuntu: `sudo apt install libmpv2` — Fedora: `sudo dnf install mpv-libs`.
+- Debian/Ubuntu: `sudo apt install libmpv2 libxcb-cursor0` — Fedora: `sudo dnf install mpv-libs xcb-util-cursor`.
+  (`libxcb-cursor0` is needed by Qt's X11 backend, used for video embedding — including under Wayland via XWayland.)
 - Optional: `ffprobe` (from `ffmpeg`) improves failure diagnostics.
 
 ```bash
@@ -71,7 +72,7 @@ The Configuration window opens on first run.
 
 > **Prefer a package?** Pre-built Linux `.deb` files are attached to every
 > [release](https://github.com/Arcneell/sentinelle/releases):
-> `sudo apt install ./sentinelle_2.0.2_amd64.deb` (pulls `libmpv2` automatically).
+> `sudo apt install ./sentinelle_2.1.0_amd64.deb` (pulls `libmpv2` automatically).
 
 ## Configuration
 
@@ -155,12 +156,24 @@ docker compose up -d --build     # builds the API image and starts both containe
   `deploy/mediamtx.yml`, recreate the relay so it reloads: `docker compose up -d
   --force-recreate mediamtx`.
 
-**Security model.** Passwords are hashed with PBKDF2 (never stored or sent in clear);
-sessions are stateless signed tokens that a password change immediately invalidates;
-per-user camera access is enforced both in the API and at the relay (MediaMTX external
-HTTP authorization calls back into the API for every read); DVR credentials live only on
-the server. The API speaks plain HTTP — deploy it on a trusted network (VPN) or behind a
-TLS reverse proxy (Caddy / nginx). `deploy/data/` holds all secrets and is gitignored.
+**Security model.** Passwords are hashed with PBKDF2 (never stored or sent in clear)
+with an 8-character minimum; sessions are stateless signed tokens that a password change
+immediately invalidates and that **expire** after `SENTINELLE_TOKEN_TTL_H` hours (default
+168 = 7 days — clients with "Rester connecté" refresh silently before expiry); repeated
+failed logins from one IP are throttled (HTTP 429). Per-user camera access is enforced
+both in the API and at the relay (MediaMTX external HTTP authorization calls back into the
+API for every read, and external publishing to the relay is refused); DVR credentials live
+only on the server.
+
+The API speaks plain HTTP — deploy it on a trusted network (VPN), or terminate TLS with the
+bundled Caddy overlay:
+
+```bash
+export SENTINELLE_DOMAIN=sentinelle.example.org   # or use `tls internal` — see deploy/Caddyfile
+docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d
+```
+
+`deploy/data/` holds all secrets and is gitignored.
 
 ## Building packages
 
@@ -173,17 +186,19 @@ docker run --rm -v "${PWD}:/src" -w /src debian:12 bash packaging/build_deb.sh
 ```
 
 ```powershell
-# Windows executable (PyInstaller)
-pip install pyinstaller
-pyinstaller --noconfirm --windowed --name Sentinelle --icon packaging/sentinelle.ico `
-    --add-binary "lib\libmpv-2.dll;." `
-    --add-data "sentinelle\ui\sentinelle.ico;sentinelle/ui" `
-    --add-data "sentinelle\ui\sentinelle.png;sentinelle/ui" run.py
+# Windows executable (PyInstaller) — builds dist/Sentinelle/Sentinelle.exe
+pwsh packaging/build_windows.ps1
 ```
 
+The script signs the executable when a code-signing certificate is provided
+(`$env:SENTINELLE_PFX` / `$env:SENTINELLE_PFX_PW`) — **recommended**, as unsigned builds are
+routinely blocked by endpoint protection (Symantec Endpoint Protection & co.). Without a
+certificate it still builds, unsigned.
+
 Installed `.deb`: launch **Sentinelle** from the applications menu or the `sentinelle`
-command (Debian 12+ / Ubuntu 24.04+). Under Wayland, if tiles stay black:
-`QT_QPA_PLATFORM=xcb sentinelle`.
+command (Debian 12+ / Ubuntu 24.04+). On a Wayland session (GNOME's default) the app
+automatically runs under XWayland (`QT_QPA_PLATFORM=xcb`) so video renders — set that
+variable yourself only to override the auto-detection.
 
 ## Architecture
 

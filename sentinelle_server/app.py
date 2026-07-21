@@ -13,9 +13,11 @@ identifiants DVR ne quittent jamais le serveur.
 
 import asyncio
 import base64
+import ipaddress
 import json
 import logging
 import threading
+import time
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
@@ -23,11 +25,42 @@ from fastapi.responses import Response, StreamingResponse
 from sentinelle.snapshot import fetch_snapshot
 
 from . import __version__
+from .auth import MIN_MDP
 from .motion import EventHub, MotionMonitor
 from .relay import Relay
 from .store import Store
 
 logger = logging.getLogger(__name__)
+
+# Anti-force-brute du login : au-delà de LOGIN_MAX échecs sur LOGIN_WINDOW_S
+# depuis une même IP, on refuse (429) sans vérifier le mot de passe. Volontaire-
+# ment par IP (et non par compte) pour ne pas permettre de verrouiller à
+# distance le compte d'un mur d'images (déni de service).
+LOGIN_WINDOW_S = 300
+LOGIN_MAX = 8
+
+
+def _ip_interne(ip: str) -> bool:
+    """Adresse privée (RFC 1918) ou loopback — le réseau Docker/LAN de confiance."""
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return a.is_private or a.is_loopback
+
+
+def _ip_client(request: Request) -> str:
+    """IP d'origine pour la limitation du login.
+
+    X-Forwarded-For n'est pris en compte que si le pair TCP est lui-même sur le
+    réseau interne (cas du reverse proxy Caddy) : sinon un client direct
+    pourrait forger l'en-tête et changer d'« IP » à chaque tentative pour
+    contourner la limitation."""
+    pair = request.client.host if request.client else "?"
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff and _ip_interne(pair):
+        return xff.split(",")[0].strip()
+    return pair
 
 
 def create_app(data_dir: str | None = None) -> FastAPI:
@@ -37,6 +70,7 @@ def create_app(data_dir: str | None = None) -> FastAPI:
     monitor = MotionMonitor(hub.publier)
     ptz_locks: dict[str, threading.Lock] = {}
     ptz_clients: dict[str, object] = {}
+    login_fails: dict[str, list] = {}          # ip -> [horodatages d'échec récents]
 
     from contextlib import asynccontextmanager
 
@@ -87,6 +121,19 @@ def create_app(data_dir: str | None = None) -> FastAPI:
 
     @app.post("/api/login")
     async def login(request: Request):
+        ip = _ip_client(request)
+        now = time.time()
+        if len(login_fails) > 512:
+            # purge des IP sans échec récent (sinon croissance sans borne)
+            for k in [k for k, v in login_fails.items()
+                      if not v or now - v[-1] > LOGIN_WINDOW_S]:
+                login_fails.pop(k, None)
+        recents = [t for t in login_fails.get(ip, []) if now - t < LOGIN_WINDOW_S]
+        if len(recents) >= LOGIN_MAX:
+            login_fails[ip] = recents
+            retry = int(LOGIN_WINDOW_S - (now - recents[0]))
+            raise HTTPException(429, f"trop de tentatives — réessayez dans {retry}s",
+                                headers={"Retry-After": str(max(1, retry))})
         try:
             corps = await request.json()
         except Exception:
@@ -94,10 +141,21 @@ def create_app(data_dir: str | None = None) -> FastAPI:
         user = store.users.authentifier(str(corps.get("username", "")),
                                         str(corps.get("password", "")))
         if user is None:
+            recents.append(now)
+            login_fails[ip] = recents
             raise HTTPException(401, "identifiant ou mot de passe incorrect")
+        login_fails.pop(ip, None)              # succès → on repart de zéro pour cette IP
         return {"token": store.users.emettre_jeton(user),
                 "username": user.username, "role": user.role,
                 "version": __version__}
+
+    @app.get("/api/session")
+    def session(request: Request):
+        """État de la session courante (validité restante du jeton), pour le
+        rafraîchissement proactif côté client."""
+        u = user_courant(request)
+        return {"ok": True, "username": u.username, "role": u.role,
+                "reste_s": store.users.reste_jeton(_token(request))}
 
     @app.post("/api/account/password")
     async def changer_mon_mdp(request: Request):
@@ -110,8 +168,8 @@ def create_app(data_dir: str | None = None) -> FastAPI:
         nouveau = str(corps.get("nouveau", ""))
         if store.users.authentifier(u.username, ancien) is None:
             raise HTTPException(403, "mot de passe actuel incorrect")
-        if len(nouveau) < 4:
-            raise HTTPException(422, "nouveau mot de passe trop court")
+        if len(nouveau) < MIN_MDP:
+            raise HTTPException(422, f"nouveau mot de passe trop court (min {MIN_MDP})")
         store.users.definir_mot_de_passe(u.username, nouveau)
         # le jeton signé dépend de l'empreinte du mdp → renouveler la session
         u2 = store.users.users[u.username]
@@ -225,6 +283,10 @@ def create_app(data_dir: str | None = None) -> FastAPI:
             warnings = store.remplacer_config(data)
         except Exception as e:
             raise HTTPException(422, f"configuration rejetée : {e}")
+        # les clients ONVIF (PTZ) sont mis en cache par caméra avec l'hôte et les
+        # identifiants du moment : on les jette pour que la nouvelle config (IP ou
+        # mot de passe modifiés) reprenne effet sans redémarrer le serveur.
+        ptz_clients.clear()
         relay.sync_fond(store)
         monitor.surveiller(store.cfg.cameras)
         logger.info(f"Configuration remplacée ({len(store.cfg.cameras)} caméras)")
@@ -287,7 +349,14 @@ def create_app(data_dir: str | None = None) -> FastAPI:
             raise HTTPException(400, "requête invalide")
         action = corps.get("action", "")
         if action not in ("read", "playback"):
-            # publish (source à la demande) et le reste : géré en interne
+            # publish : refusé depuis une IP publique (nos chemins sont alimentés
+            # par une source à la demande interne ; aucun poste ne publie vers le
+            # relais). Une requête SANS ip (appel interne MediaMTX) reste tolérée
+            # — sinon un changement de comportement de MediaMTX couperait tous
+            # les flux. Le reste (api/metrics) est déjà exclu côté MediaMTX.
+            ip = str(corps.get("ip", ""))
+            if action == "publish" and ip and not _ip_interne(ip):
+                raise HTTPException(403, "publication externe refusée")
             return {"ok": True}
         user = store.users.user_du_jeton(str(corps.get("password", "")))
         if user is None:
@@ -357,8 +426,17 @@ def create_app(data_dir: str | None = None) -> FastAPI:
     async def events(request: Request):
         """Flux SSE des mouvements, limité aux caméras autorisées de l'utilisateur."""
         u = user_courant(request)
+        token = _token(request)
         visibles = store.users.cameras_visibles(u, store.cfg)
         q = hub.abonner()
+
+        def _revalider() -> set | None:
+            """Recalcule les caméras visibles depuis l'état courant (droits ou
+            jeton ont pu changer pendant la diffusion). None = session finie."""
+            u2 = store.users.user_du_jeton(token)
+            if u2 is None:
+                return None
+            return store.users.cameras_visibles(u2, store.cfg)
 
         async def gen():
             try:
@@ -370,9 +448,14 @@ def create_app(data_dir: str | None = None) -> FastAPI:
                         return
                     try:
                         evt = await asyncio.wait_for(q.get(), timeout=15)
-                        if evt.get("camera") in visibles:
+                        vis = _revalider()
+                        if vis is None:
+                            return                    # droits révoqués / jeton expiré
+                        if evt.get("camera") in vis:
                             yield f"data: {json.dumps(evt)}\n\n"
                     except asyncio.TimeoutError:
+                        if _revalider() is None:
+                            return
                         yield ": keepalive\n\n"
             finally:
                 hub.desabonner(q)

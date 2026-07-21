@@ -205,7 +205,6 @@ class VideoTile(QFrame):
             f"border: {largeur}px solid {couleur}; }}")
 
     def _build_controls(self) -> QWidget:
-        from .icons import icon
         bar = QWidget()
         h = QHBoxLayout(bar)
         h.setContentsMargins(6, 3, 6, 3)

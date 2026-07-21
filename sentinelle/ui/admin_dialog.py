@@ -11,7 +11,7 @@ gestion des erreurs ; la fenêtre ne se ferme pas si un envoi échoue.
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFormLayout,
-                               QGroupBox, QHBoxLayout, QInputDialog, QLabel,
+                               QGroupBox, QHBoxLayout, QInputDialog,
                                QLineEdit, QListWidget, QListWidgetItem,
                                QMessageBox, QPushButton, QSpinBox, QTabWidget,
                                QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
@@ -96,6 +96,11 @@ class UserEditDialog(QDialog):
             if not self._mdp.text():
                 QMessageBox.warning(self, "Compte", "Définissez un mot de passe.")
                 return
+        if self._mdp.text() and len(self._mdp.text()) < 8:
+            # même minimum que le serveur (MIN_MDP) : évite un rejet tardif
+            QMessageBox.warning(self, "Compte",
+                                "Le mot de passe doit faire au moins 8 caractères.")
+            return
         self.accept()
 
     def valeurs(self) -> dict:
@@ -210,9 +215,14 @@ class UsersWidget(QWidget):
         mdp, ok = QInputDialog.getText(self, "Mot de passe",
                                        f"Nouveau mot de passe pour « {u['username']} » :",
                                        QLineEdit.Password)
-        if ok and mdp:
-            u["password"] = mdp
-            self.modifie = True
+        if not ok or not mdp:
+            return
+        if len(mdp) < 8:                     # même minimum que le serveur (MIN_MDP)
+            QMessageBox.warning(self, "Mot de passe",
+                                "Le mot de passe doit faire au moins 8 caractères.")
+            return
+        u["password"] = mdp
+        self.modifie = True
 
     def _supprimer(self):
         u = self._selection()
