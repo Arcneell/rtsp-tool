@@ -59,8 +59,8 @@ See [Server](#central-server) below for deployment.
 Requires **Python 3.11+** and **libmpv**.
 
 - Windows: put `libmpv-2.dll` in a `lib/` folder at the project root.
-- Debian/Ubuntu: `sudo apt install libmpv2 libxcb-cursor0` — Fedora: `sudo dnf install mpv-libs xcb-util-cursor`.
-  (`libxcb-cursor0` is needed by Qt's X11 backend, used for video embedding — including under Wayland via XWayland.)
+- Debian/Ubuntu: `sudo apt install libmpv2 libxcb-cursor0 va-driver-all` — Fedora: `sudo dnf install mpv-libs xcb-util-cursor libva-utils`.
+  (`libxcb-cursor0` is needed by Qt's X11 backend, used for video embedding — including under Wayland via XWayland; `va-driver-all` enables **hardware video decoding** (VA-API), which is what lets low-power mini-PCs run many streams without saturating the CPU.)
 - Optional: `ffprobe` (from `ffmpeg`) improves failure diagnostics.
 
 ```bash
@@ -72,7 +72,7 @@ The Configuration window opens on first run.
 
 > **Prefer a package?** Pre-built Linux `.deb` files are attached to every
 > [release](https://github.com/Arcneell/sentinelle/releases):
-> `sudo apt install ./sentinelle_2.1.0_amd64.deb` (pulls `libmpv2` automatically).
+> `sudo apt install ./sentinelle_2.1.1_amd64.deb` (pulls `libmpv2`, `libxcb-cursor0` and the VA-API drivers automatically).
 
 ## Configuration
 
@@ -109,8 +109,10 @@ and an off-screen camera holds no connection.
 | Extreme eco | JPEG snapshot every N seconds  | substream        |
 
 Rotation and loops close the current streams before opening the next. RTSP runs over TCP.
-Substreams are rendered with mpv's `ewa_lanczossharp` scaler so they stay readable when
-enlarged — no extra processing, no external dependencies.
+Rendering favours **robustness over sharpness**: on Linux, video is decoded in **hardware**
+(VA-API) and rendered in software (no OpenGL) — this runs on any hardware, including the
+low-power fanless mini-PCs used as video walls, whose GPU drivers often crash mpv's OpenGL
+path. Set `SENTINELLE_MPV_VO` / `SENTINELLE_MPV_HWDEC` to override per machine.
 
 ### Device support
 
@@ -209,7 +211,7 @@ sentinelle/                  Desktop client (PySide6 / Qt 6)
 ├── snapshot.py              JPEG snapshots (ISAPI/CGI) and Hikvision channel discovery
 ├── onvif.py                 ONVIF: WS-Discovery, stream/snapshot URIs, PTZ, motion events
 ├── motion.py                ONVIF motion monitor (per-camera event subscription threads)
-├── player.py                libmpv loading, RTSP settings, upscaling
+├── player.py                libmpv loading, RTSP settings, VA-API HW decode
 ├── remote.py                Server mode: API client, session login, SSE motion listener
 └── ui/                      Title bar, sidebar, grid/single views, tiles, dialogs, theme
 sentinelle_server/           Server (no Qt dependency)

@@ -37,17 +37,37 @@ def mpv_disponible() -> bool:
 
 def create_player(wid: int, log_handler=None):
     """Instance mpv embarquée dans le widget natif `wid`, réglée pour du RTSP
-    basse latence avec un upscaling soigné des substreams.
+    basse latence, privilégiant la ROBUSTESSE sur la qualité d'image.
 
-    Sortie vidéo overridable par l'environnement pour les pilotes GPU fragiles
-    (cf. --safe-video) : SENTINELLE_MPV_VO / SENTINELLE_MPV_HWDEC. En mode sûr
-    (vo=x11, hwdec=no), on n'active PAS les scalers GPU (ignorés sans OpenGL,
-    et sources de crash sur certains pilotes)."""
+    Rendu par défaut :
+      - Linux  : logiciel (vo=x11, sans OpenGL). Les pilotes GPU des postes
+                 muraux (NVIDIA sans backend, notamment) font planter le chemin
+                 OpenGL de mpv — voire tout le système. Pas d'upscaling.
+      - Windows : vo=gpu (Direct3D, fiable sur ce système).
+
+    Tout est surchargeable par l'environnement :
+      SENTINELLE_MPV_VO    (ex. gpu si le poste a un pilote fiable)
+      SENTINELLE_MPV_HWDEC (ex. vaapi-copy / nvdec-copy pour décharger le
+                            décodage sur un GPU SANS utiliser le rendu OpenGL —
+                            indispensable pour tenir un mur de flux sur un CPU
+                            modeste).
+
+    Décodage allégé (saut du filtre anti-blocs) pour tenir plus de tuiles en
+    décodage logiciel : image un peu plus « blocs », charge CPU nettement
+    réduite. Ces réglages sont ignorés si le décodage est matériel."""
     if mpv is None:
         raise RuntimeError(f"libmpv indisponible : {MPV_IMPORT_ERROR}")
 
-    vo = os.environ.get("SENTINELLE_MPV_VO", "gpu")
-    hwdec = os.environ.get("SENTINELLE_MPV_HWDEC", "auto-safe")
+    if sys.platform == "win32":
+        vo_defaut, hwdec_defaut = "gpu", "auto-safe"
+    else:
+        # Linux : décodage MATÉRIEL via VA-API (iGPU Intel/AMD), image copiée en
+        # RAM — décharge complètement le CPU sans jamais toucher au rendu OpenGL
+        # (qui plante sur ces pilotes et fait chauffer/couper les mini-PC). Se
+        # rabat tout seul sur le logiciel si VA-API est absent ; rendu x11.
+        vo_defaut, hwdec_defaut = "x11", "vaapi-copy"
+    vo = os.environ.get("SENTINELLE_MPV_VO", vo_defaut)
+    hwdec = os.environ.get("SENTINELLE_MPV_HWDEC", hwdec_defaut)
 
     opts = dict(
         wid=str(int(wid)),
@@ -64,17 +84,11 @@ def create_player(wid: int, log_handler=None):
         input_default_bindings=False,
         input_vo_keyboard=False,
         input_cursor=False,
+        # mur multi-flux : abandonner les trames en retard plutôt que d'accumuler,
+        framedrop="vo",
+        # et sauter le filtre anti-blocs (~30 % du coût de décodage en moins) —
+        # sans effet en décodage matériel.
+        vd_lavc_skiploopfilter="all",
+        vd_lavc_fast=True,
     )
-    if vo == "gpu":
-        # Upscaling : rend un substream basse résolution nettement plus net une
-        # fois étiré sur une grande tuile (scaler à lobes elliptiques + sigmoïde
-        # anti-halo + deband pour effacer le blocking JPEG/H.264). Réservé au vo
-        # GPU (OpenGL) ; inutile/ignoré avec une sortie logicielle.
-        opts.update(
-            scale="ewa_lanczossharp",
-            cscale="ewa_lanczossharp",
-            dscale="mitchell",
-            sigmoid_upscaling=True,
-            deband=True,
-        )
     return mpv.MPV(**opts)
