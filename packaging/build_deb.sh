@@ -42,6 +42,9 @@ cp packaging/sentinelle.svg "$ROOT/usr/share/icons/hicolor/scalable/apps/sentine
 # libxcb-cursor0 : requise par le plugin Qt « xcb » (Qt 6.5+), non embarquée
 # par PySide6 et absente d'un Debian GNOME (Wayland) frais — sans elle,
 # l'application se replierait en Wayland natif et les tuiles resteraient noires.
+# va-driver-all : pilotes VA-API (décodage vidéo MATÉRIEL). Sur ces mini-PC
+# (iGPU Intel/AMD), c'est ce qui permet de tenir plusieurs flux sans saturer le
+# CPU ni surchauffer — le rendu reste logiciel, seul le décodage est matériel.
 cat > "$ROOT/DEBIAN/control" <<EOF
 Package: sentinelle
 Version: ${VERSION}
@@ -49,7 +52,7 @@ Section: video
 Priority: optional
 Architecture: ${ARCH}
 Depends: libmpv2 | libmpv1, libxcb-cursor0
-Recommends: ffmpeg
+Recommends: ffmpeg, va-driver-all
 Maintainer: Sentinelle <sentinelle@example.com>
 Description: Visionneuse de videosurveillance multi-sites (RTSP, ONVIF)
  Visualisation en grille/mono de cameras RTSP (Hikvision, Dahua, ONVIF),
