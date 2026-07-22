@@ -62,6 +62,54 @@ def attendre_liberations(timeout_s: float = 5.0):
             break
         th.join(restant)
 
+_libx11 = None
+
+
+def _mapper_enfants_x11(wid: int):
+    """Ceinture de sécurité contre le bug d'incrustation de mpv (x11_common) :
+    quand le MapNotify du parent arrive pendant l'initialisation de mpv, mpv le
+    prend pour celui de SA fenêtre enfant et ne la mappe jamais — le flux est
+    décodé mais la tuile reste noire. XMapWindow étant idempotent, on mappe
+    toute fenêtre enfant du wid restée cachée. Sans effet hors X11/XWayland."""
+    global _libx11
+    if sys.platform == "win32":
+        return
+    try:
+        from PySide6.QtGui import QGuiApplication
+        if not QGuiApplication.platformName().lower().startswith("xcb"):
+            return
+        import ctypes
+        if _libx11 is None:
+            x = ctypes.CDLL("libX11.so.6")
+            x.XOpenDisplay.restype = ctypes.c_void_p
+            x.XOpenDisplay.argtypes = [ctypes.c_char_p]
+            x.XQueryTree.argtypes = [
+                ctypes.c_void_p, ctypes.c_ulong,
+                ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_ulong),
+                ctypes.POINTER(ctypes.POINTER(ctypes.c_ulong)),
+                ctypes.POINTER(ctypes.c_uint)]
+            x.XMapWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+            x.XFree.argtypes = [ctypes.c_void_p]
+            x.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            d = x.XOpenDisplay(None)
+            if not d:
+                return
+            _libx11 = (x, d)
+        x, d = _libx11
+        racine, parent = ctypes.c_ulong(), ctypes.c_ulong()
+        enfants, n = ctypes.POINTER(ctypes.c_ulong)(), ctypes.c_uint()
+        if not x.XQueryTree(d, wid, ctypes.byref(racine), ctypes.byref(parent),
+                            ctypes.byref(enfants), ctypes.byref(n)):
+            return
+        for i in range(n.value):
+            x.XMapWindow(d, enfants[i])
+        if enfants:
+            x.XFree(enfants)
+        x.XSync(d, 0)
+    except Exception:
+        pass                # le pire cas doit rester « pas de vidéo », pas un crash
+
+
 KIND_LABELS = {
     "timeout": "délai dépassé",
     "network": "site injoignable",
@@ -201,13 +249,24 @@ class VideoTile(QFrame):
 
         body = QWidget()
         self._stack = QStackedLayout(body)
-        self._stack.setStackingMode(QStackedLayout.StackOne)
+        # StackAll : la surface vidéo reste visible (fenêtre X mappée) EN
+        # PERMANENCE, le texte d'état opaque s'affiche PAR-DESSUS. En mode
+        # StackOne, la fenêtre native de _video n'était mappée qu'au passage
+        # en lecture — or ce MapNotify du parent arrive pendant l'initialisation
+        # de mpv (déclenchée par le même événement file-loaded), et mpv le
+        # confond avec celui de SA fenêtre enfant (x11_common ne filtre pas) :
+        # il ne mappe alors JAMAIS sa fenêtre → flux décodé mais tuile noire.
+        # Parent mappé d'emblée = plus de MapNotify tardif à confondre.
+        # (Diagnostiqué sur mur GLK/XWayland, mpv 0.40 ; voir aussi
+        # _mapper_enfants_x11, la ceinture de sécurité.)
+        self._stack.setStackingMode(QStackedLayout.StackAll)
         self._video = _VideoSurface()
         self._status = QLabel()
         self._status.setAlignment(Qt.AlignCenter)
         self._status.setWordWrap(True)
-        self._stack.addWidget(self._status)   # index 0
-        self._stack.addWidget(self._video)    # index 1
+        self._stack.addWidget(self._status)   # index 0 — couche du dessus
+        self._stack.addWidget(self._video)    # index 1 — toujours visible dessous
+        self._stack.setCurrentIndex(0)        # l'état reste la couche haute
         root.addWidget(body, 1)
 
         # barre de commandes (vue mono) : zoom numérique + PTZ si motorisée
@@ -291,10 +350,12 @@ class VideoTile(QFrame):
         self._dot.setStyleSheet(
             f"background-color: {_DOT_COLORS[state]}; border-radius: 5px;")
         if state == TileState.PLAYING:
-            self._stack.setCurrentIndex(1)
+            # on cache l'étiquette au lieu de changer de page : la surface
+            # vidéo ne doit jamais être dé-mappée/re-mappée (voir _build_ui)
+            self._status.hide()
         else:
             self._status.setText(message)
-            self._stack.setCurrentIndex(0)
+            self._status.show()
         self.state_changed.emit()
 
     def mouseDoubleClickEvent(self, event):
@@ -612,6 +673,14 @@ class VideoTile(QFrame):
             return
         self._connect_timer.start()
 
+    def _verifier_apres_lecture(self):
+        """3 s après le début de lecture : sortie vidéo configurée, décodeur
+        stabilisé — moment fiable pour la ceinture de mappage et le diagnostic."""
+        if self.state != TileState.PLAYING or self._player is None:
+            return
+        _mapper_enfants_x11(int(self._video.winId()))
+        self._log_hwdec()
+
     def _log_hwdec(self):
         """Rend visible le mode de décodage réel : le repli VA-API → logiciel de
         mpv est silencieux, et c'est lui qui sature les mini-PC quand le
@@ -649,8 +718,14 @@ class VideoTile(QFrame):
         if self._failures > 0:
             logger.info(f"[{self.camera.id}] reconnecté après {self._failures} échec(s)")
         self._failures = 0
-        self._log_hwdec()
         self._set_state(TileState.PLAYING)
+        # file-loaded précède la première trame : la sortie vidéo de mpv n'est
+        # pas encore configurée. On repasse dans 3 s pour (1) mapper sa fenêtre
+        # si le bug d'incrustation l'a laissée cachée et (2) lire le mode de
+        # décodage réellement retenu — lu tout de suite, hwdec-current répond
+        # « no » à tort (faux avertissements « décodage LOGICIEL »).
+        _mapper_enfants_x11(int(self._video.winId()))
+        QTimer.singleShot(3000, self, self._verifier_apres_lecture)
         self._debit_timer.start()
         if self._zoom:
             self._set_zoom(self._zoom)
